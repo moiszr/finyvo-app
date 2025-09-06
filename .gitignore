@@ -1,13 +1,21 @@
 # Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
 
-# dependencies
+# Node / JS
 node_modules/
-
-# Expo
-.expo/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
 dist/
+build/
+coverage/
+
+# Expo / React Native
+.expo/
+.expo-shared/
+.expo-source/
 web-build/
-expo-env.d.ts
+.expo-env.local
 
 # Native
 .kotlin/
@@ -30,8 +38,26 @@ yarn-error.*
 .DS_Store
 *.pem
 
-# local env files
-.env*.local
+# Env / keys
+.env
+.env.*
+!.env.example
 
 # typescript
 *.tsbuildinfo
+
+# iOS / Android (si trabajas con Expo Managed lo normal es ignorarlos)
+ios/
+android/
+
+# OS / IDEs
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+
+
+# Misc
+*.trace
+*.map
