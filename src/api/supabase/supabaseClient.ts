@@ -1,8 +1,8 @@
-// src/lib/supabase.ts
+// src/api/supabase/supabaseClient.ts
 import 'react-native-url-polyfill/auto';
 import 'react-native-get-random-values';
 
-import { AppState, Platform } from 'react-native';
+import { Platform } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import {
   createClient,
@@ -20,38 +20,34 @@ export const supabase: SupabaseClient<Database> = createClient<Database>(
       ...(Platform.OS !== 'web' ? { storage: AsyncStorage as any } : {}),
       autoRefreshToken: true,
       persistSession: true,
-      detectSessionInUrl: false, // en nativo manejamos el deep link manualmente
+      detectSessionInUrl: Platform.OS === 'web', // web: true, nativo: false
       lock: processLock,
     },
-    realtime: {
-      params: {
-        eventsPerSecond: 10,
-      },
-    },
+    realtime: { params: { eventsPerSecond: 10 } },
   },
 );
 
-// Refresco de tokens acoplado al estado de la app (recomendado en RN)
-if (Platform.OS !== 'web') {
-  AppState.addEventListener('change', (state) => {
-    if (state === 'active') supabase.auth.startAutoRefresh();
-    else supabase.auth.stopAutoRefresh();
-  });
-}
-
-// Añadir la función helper de la opción 1
+/**
+ * Comprobación de conectividad simple. Considera "OK" algunos errores
+ * esperables (sin filas / RLS / no autorizado) que indican que sí hubo
+ * conexión al backend.
+ */
 export async function checkSupabaseConnection() {
   try {
     const { error } = await supabase.from('users').select('id').limit(1);
 
-    if (error && error.code !== 'PGRST116') {
-      // PGRST116: no rows found, which is not a connection error
-      throw error;
+    if (error) {
+      // OK si: no hay filas, RLS/forbidden o no autorizado
+      const okCodes = new Set(['PGRST116', 'PGRST301', 'PGRST302']);
+      const okStatus = new Set([401, 403]);
+      if (!okCodes.has(error.code as string)) {
+        throw error;
+      }
     }
-    console.log('✅ Conexión con Supabase exitosa.');
+    console.log('✅ Conexión con Supabase OK');
     return true;
-  } catch (error) {
-    console.error('❌ Error conectando con Supabase:', error);
+  } catch (e) {
+    console.error('❌ Error conectando con Supabase:', e);
     return false;
   }
 }
