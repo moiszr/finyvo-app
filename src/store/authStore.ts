@@ -5,21 +5,38 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import type { Session, User } from '@supabase/supabase-js';
 import { supabase } from '@/api/supabase/supabaseClient';
 
+type OnboardMap = Record<string, boolean>;
+
 export interface AuthState {
-  // Estado
+  // Estado auth
   session: Session | null;
   user: User | null;
   isLoading: boolean;
-  isOnboarded: boolean;
-  isRecoverySession: boolean; // NUEVO: Flag para sesión temporal de recovery
+  isRecoverySession: boolean;
+
+  // Onboarding por usuario
+  onboardedByUserId: OnboardMap;
+
+  // LEGACY: boolean global que quizá tengas en el storage de versiones anteriores.
+  // Lo usamos SOLO para migrar al mapa por usuario.
+  _legacyIsOnboarded?: boolean;
 
   // Acciones
   initialize: () => Promise<void>;
   signOut: () => Promise<void>;
-  setOnboarded: (value: boolean) => void;
-  setRecoverySession: (value: boolean) => void; // NUEVO
+  clearRecoveryAndSignOut: () => Promise<void>;
+  setRecoverySession: (value: boolean) => void;
+
+  // Onboarding helpers
+  setOnboarded: (value: boolean) => void; // marca para el user actual
+  isOnboarded: () => boolean; // lee el flag del user actual
+  resetOnboardingForCurrentUser: () => void;
+
+  // Limpieza
   clearAuth: () => void;
-  clearRecoveryAndSignOut: () => Promise<void>; // NUEVO: Para después de cambiar password
+
+  // Evitar listeners duplicados
+  _unsubscribeAuth?: () => void;
 }
 
 export const useAuthStore = create<AuthState>()(
@@ -29,170 +46,200 @@ export const useAuthStore = create<AuthState>()(
       session: null,
       user: null,
       isLoading: true,
-      isOnboarded: false,
       isRecoverySession: false,
 
-      // Inicializar autenticación
+      // Onboarding por usuario
+      onboardedByUserId: {},
+      _legacyIsOnboarded: undefined,
+
+      // ======================
+      // INIT
+      // ======================
       initialize: async () => {
         try {
           console.log('🚀 Inicializando autenticación...');
 
-          // Obtener sesión actual
+          // 1) Sesión actual
           const {
             data: { session },
             error,
           } = await supabase.auth.getSession();
 
-          if (error) {
-            console.error('❌ Error obteniendo sesión:', error);
-            throw error;
-          }
+          if (error) throw error;
 
           console.log('📱 Sesión encontrada:', !!session);
           console.log('👤 Usuario:', session?.user?.email || 'No user');
 
-          // Actualizar estado
-          set({
-            session,
-            user: session?.user || null,
-            isLoading: false,
-          });
+          set({ session, user: session?.user || null, isLoading: false });
 
-          // Escuchar cambios de autenticación
+          // 2) Migración LEGACY (booleano global → mapa por user)
+          const uid = session?.user?.id;
+          const { _legacyIsOnboarded, onboardedByUserId } = get();
+          if (uid && _legacyIsOnboarded && !onboardedByUserId[uid]) {
+            set({
+              onboardedByUserId: { ...onboardedByUserId, [uid]: true },
+              _legacyIsOnboarded: false, // limpiar legacy
+            });
+            console.log('🧭 Migrado isOnboarded → por usuario:', uid);
+          }
+
+          // 3) Evitar listeners duplicados (Fast Refresh / re-init)
+          get()._unsubscribeAuth?.();
+
+          // 4) Listener Auth
           const {
             data: { subscription },
           } = supabase.auth.onAuthStateChange((event, session) => {
             console.log('🔄 Auth state changed:', event);
             console.log('👤 Nueva sesión:', !!session);
 
-            // Si es un evento de recovery, marcar como sesión temporal
+            // Estados base del usuario
+            if (
+              event === 'INITIAL_SESSION' ||
+              event === 'SIGNED_IN' ||
+              event === 'TOKEN_REFRESHED' ||
+              event === 'USER_UPDATED'
+            ) {
+              set({ session, user: session?.user || null });
+              // Migración por si llegó user aquí
+              const u = session?.user?.id;
+              if (u) {
+                const { _legacyIsOnboarded: legacy, onboardedByUserId: map } =
+                  get();
+                if (legacy && !map[u]) {
+                  set({
+                    onboardedByUserId: { ...map, [u]: true },
+                    _legacyIsOnboarded: false,
+                  });
+                  console.log(
+                    '🧭 Migrado (listener) isOnboarded → por usuario:',
+                    u,
+                  );
+                }
+              }
+            }
+
             if (event === 'PASSWORD_RECOVERY') {
-              console.log('🔐 Sesión de recovery detectada');
               set({
                 session,
                 user: session?.user || null,
                 isRecoverySession: true,
               });
             }
-            // Si es un login normal
-            else if (event === 'SIGNED_IN') {
-              set({
-                session,
-                user: session?.user || null,
-                // isRecoverySession lo controla el layout cuando procesa deep links
-              });
-            }
 
-            // Si se cerró sesión
-            else if (event === 'SIGNED_OUT') {
-              get().clearAuth();
-            }
-            // Otros eventos
-            else {
-              set({
-                session,
-                user: session?.user || null,
-              });
+            if (event === 'SIGNED_OUT') {
+              // No borramos el mapa de onboards (es por usuario), solo estado volátil
+              set({ session: null, user: null, isRecoverySession: false });
             }
           });
 
+          set({ _unsubscribeAuth: () => subscription.unsubscribe() });
           console.log('✅ Auth inicializado correctamente', !!subscription);
-        } catch (error) {
-          console.error('❌ Error inicializando auth:', error);
-          set({
-            session: null,
-            user: null,
-            isLoading: false,
-          });
+        } catch (e) {
+          console.error('❌ Error inicializando auth:', e);
+          set({ session: null, user: null, isLoading: false });
         }
       },
 
-      // Cerrar sesión normal
+      // ======================
+      // SIGN OUTS
+      // ======================
       signOut: async () => {
         try {
           console.log('🚪 Cerrando sesión...');
-
-          const { error } = await supabase.auth.signOut();
-
-          if (error) {
-            console.error('❌ Error cerrando sesión:', error);
-            throw error;
-          }
-
-          // Limpiar estado local
-          get().clearAuth();
-
+          await supabase.auth.signOut();
+          // Limpiamos estado volátil; NO tocamos el mapa de onboarding
+          set({ session: null, user: null, isRecoverySession: false });
           console.log('✅ Sesión cerrada correctamente');
-        } catch (error) {
-          console.error('❌ Error en signOut:', error);
-          // Limpiar de todas formas
-          get().clearAuth();
-          throw error;
+        } catch (e) {
+          console.error('❌ Error en signOut:', e);
+          set({ session: null, user: null, isRecoverySession: false });
+          throw e;
         }
       },
 
-      // Cerrar sesión después de cambiar password (recovery)
       clearRecoveryAndSignOut: async () => {
         try {
           console.log('🔐 Cerrando sesión de recovery...');
-
-          // Cerrar sesión en Supabase
           await supabase.auth.signOut();
-
-          // Limpiar estado pero mantener onboarded
-          const currentOnboarded = get().isOnboarded;
-          set({
-            session: null,
-            user: null,
-            isRecoverySession: false,
-            isOnboarded: currentOnboarded,
-          });
-
+          set({ session: null, user: null, isRecoverySession: false });
           console.log('✅ Sesión de recovery cerrada');
-        } catch (error) {
-          console.error('❌ Error cerrando sesión de recovery:', error);
-          // Limpiar de todas formas
-          get().clearAuth();
+        } catch (e) {
+          console.error('❌ Error cerrando sesión de recovery:', e);
+          set({ session: null, user: null, isRecoverySession: false });
         }
       },
 
-      // Marcar como sesión de recovery
+      // ======================
+      // RECOVERY FLAG
+      // ======================
       setRecoverySession: (value: boolean) => {
         console.log('🔐 Setting recovery session:', value);
         set({ isRecoverySession: value });
       },
 
-      // Marcar onboarding completado
+      // ======================
+      // ONBOARDING API
+      // ======================
       setOnboarded: (value: boolean) => {
-        console.log('📝 Setting onboarded:', value);
-        set({ isOnboarded: value });
+        const uid = get().user?.id;
+        if (!uid) {
+          console.warn('setOnboarded: no hay usuario actual');
+          // Si no hay usuario (caso rarísimo), usa el legacy para no perder la intención:
+          set({ _legacyIsOnboarded: value });
+          return;
+        }
+        set((state) => ({
+          onboardedByUserId: { ...state.onboardedByUserId, [uid]: value },
+        }));
       },
 
-      // Limpiar estado de autenticación
-      clearAuth: () => {
-        console.log('🧹 Limpiando estado de auth...');
-        set({
-          session: null,
-          user: null,
-          isOnboarded: false,
-          isRecoverySession: false,
+      isOnboarded: () => {
+        const uid = get().user?.id;
+        if (!uid) return !!get()._legacyIsOnboarded; // fallback legacy
+        return !!get().onboardedByUserId[uid];
+      },
+
+      resetOnboardingForCurrentUser: () => {
+        const uid = get().user?.id;
+        if (!uid) return;
+        set((state) => {
+          const next = { ...state.onboardedByUserId };
+          delete next[uid];
+          return { onboardedByUserId: next };
         });
+        console.log('🔄 Onboarding reiniciado para el usuario actual');
+      },
+
+      // ======================
+      // LIMPIEZA VOLÁTIL
+      // ======================
+      clearAuth: () => {
+        console.log('🧹 Limpiando estado de auth (volátil) ...');
+        // OJO: NO tocamos onboardedByUserId para no perder flags por usuario
+        set({ session: null, user: null, isRecoverySession: false });
       },
     }),
     {
       name: 'finyvo-auth-storage',
       storage: createJSONStorage(() => AsyncStorage),
-      // Solo persistir isOnboarded (sesión la maneja Supabase)
+      // Persistimos SOLO el mapa de onboarding + legacy (para migración).
       partialize: (state) => ({
-        isOnboarded: state.isOnboarded,
+        onboardedByUserId: state.onboardedByUserId,
+        _legacyIsOnboarded: state._legacyIsOnboarded ?? false,
       }),
-      // Rehidratar estado al iniciar
       onRehydrateStorage: () => (state) => {
         console.log('💧 Rehidratando auth store...');
         if (state) {
-          console.log('📋 Estado persistido:', {
-            isOnboarded: state.isOnboarded,
-          });
+          console.log(
+            '📋 Onboarded map keys:',
+            Object.keys(state.onboardedByUserId || {}),
+          );
+          if (state._legacyIsOnboarded) {
+            console.log(
+              '⚠️ Legacy isOnboarded=true detectado (migrará al iniciar sesión)',
+            );
+          }
         }
       },
     },

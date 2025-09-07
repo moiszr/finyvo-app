@@ -15,15 +15,16 @@ import * as WebBrowser from 'expo-web-browser';
 
 import { authService } from '@/features/auth/services/auth';
 import { parseAuthCallback, isOAuthCallback } from '@/utils/deeplink';
-import { useAuthStore } from '@/store/authStore';
-import { LoadingScreen } from '@/components/ui/LoadingScreen';
+import { useAuthStore } from '@/store/index';
+import { LoadingScreen } from '@/components/ui/index';
 import { checkSupabaseConnection } from '@/api/supabase/supabaseClient';
+import { useSupabaseAutoRefresh } from '@/hooks/index';
 
 // Cerrar sesiones web OAuth correctamente (Expo)
 WebBrowser.maybeCompleteAuthSession();
 SplashScreen.preventAutoHideAsync();
 
-// React Query
+// React Query config
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
@@ -35,19 +36,24 @@ const queryClient = new QueryClient({
   },
 });
 
-// Rutas usadas en navegación
+// Rutas
 const PATHS = {
   SIGN_IN: '/(auth)/sign-in',
   RESET_PASSWORD: '/(auth)/reset-password',
   FORGOT_PASSWORD: '/(auth)/forgot-password',
+  VERIFY_EMAIL: '/(auth)/verify-email',
   EMAIL_VERIFIED: '/(auth)/email-verified',
+  ONBOARDING: '/(auth)/onboarding',
   DASHBOARD: '/(tabs)/dashboard',
 } as const;
 
 export default function RootLayout() {
+  // Auto-refresh tokens en RN (app foreground/background)
+  useSupabaseAutoRefresh();
+
   const router = useRouter();
-  const segments = useSegments(); // p.ej. ['(auth)', 'sign-in'] o ['(tabs)', 'dashboard']
-  const pathname = usePathname(); // p.ej. '/(auth)/sign-in'
+  const segments = useSegments();
+  const pathname = usePathname();
 
   const {
     isLoading,
@@ -57,20 +63,24 @@ export default function RootLayout() {
     setRecoverySession,
   } = useAuthStore();
 
-  // Flags/locks para control fino
+  const isOnboarded = useAuthStore((s) => s.isOnboarded());
+
+  // Flags internos
   const isProcessingLink = useRef(false);
   const linkReadyRef = useRef(false);
   const navLock = useRef(false);
   const lastUrlRef = useRef<string | null>(null);
   const justVerifiedRef = useRef(false);
 
-  // Navegación segura (evita spam y loops)
+  // Navegación segura
   const safeReplace = React.useCallback(
     (to: string, opts?: { force?: boolean }) => {
       if ((!opts?.force && navLock.current) || pathname === to) return;
       navLock.current = true;
       router.replace(to);
-      setTimeout(() => (navLock.current = false), 150);
+      setTimeout(() => {
+        navLock.current = false;
+      }, 150);
     },
     [pathname, router],
   );
@@ -80,7 +90,7 @@ export default function RootLayout() {
 
   /**
    * 1) Deep links SOLO para OTP (recovery/verify).
-   *    Los callbacks OAuth (code/hash) los maneja webOAuthStrategy.
+   *    Los callbacks OAuth los maneja tu estrategia web (no aquí).
    */
   useEffect(() => {
     if (!url) {
@@ -120,7 +130,7 @@ export default function RootLayout() {
         }
 
         if (isSignupVerifyLink && result.mode === 'otp') {
-          // Manda a /email-verified y limpia el flag enseguida para evitar rebotes
+          // Enlaza a email-verified
           justVerifiedRef.current = true;
           safeReplace(PATHS.EMAIL_VERIFIED, { force: true });
           setTimeout(() => {
@@ -139,13 +149,13 @@ export default function RootLayout() {
         linkReadyRef.current = true;
       }
     })();
-  }, [url, setRecoverySession, pathname, safeReplace]);
+  }, [url, setRecoverySession, safeReplace]);
 
   /**
-   * 2) Guardas de navegación centrales
+   * 2) Guardas de navegación
    */
   useEffect(() => {
-    // Esperar: (a) no cargar, (b) deep link evaluado, (c) no procesando link
+    // Esperar: (a) store listo, (b) deep link evaluado, (c) no procesando link
     if (isLoading || !linkReadyRef.current || isProcessingLink.current) return;
 
     const inAuthGroup = segments[0] === '(auth)';
@@ -153,28 +163,51 @@ export default function RootLayout() {
     const inForgot = segments.includes('forgot-password');
     const inVerifyEmail = segments.includes('verify-email');
     const inEmailVerified = segments.includes('email-verified');
+    const inOnboarding = segments.includes('onboarding');
 
-    // Recovery → forzar reset-password
+    // Recovery → forzar /reset-password
     if (isRecoverySession && !inReset) {
       safeReplace(PATHS.RESET_PASSWORD, { force: true });
       return;
     }
+    // Permitir permanecer en reset/forgot mientras dure el flujo
     if (inReset || inForgot) return;
 
-    // Con sesión: fuera de (auth) excepto verify/email-verified
-    const authException = inVerifyEmail || inEmailVerified;
+    // Con sesión
     if (session) {
+      // Si aún no completó onboarding → forzar onboarding
+      if (!isOnboarded && !inOnboarding) {
+        safeReplace(PATHS.ONBOARDING, { force: true });
+        return;
+      }
+
+      // Excepciones dentro de (auth) que sí permitimos con sesión:
+      const authException = inVerifyEmail || inEmailVerified || inOnboarding;
+
+      // Con sesión y dentro de (auth) (salvo excepciones) → dashboard
       if (inAuthGroup && !authException) {
         safeReplace(PATHS.DASHBOARD);
       }
       return;
     }
 
-    // Sin sesión y fuera de (auth) → ir a sign-in
+    // Sin sesión
+    // No permitir entrar a onboarding ni a rutas de tabs
     if (!inAuthGroup && segments.length > 0) {
       safeReplace(PATHS.SIGN_IN);
+      return;
     }
-  }, [session, isLoading, segments, isRecoverySession, pathname, safeReplace]);
+    if (inOnboarding) {
+      safeReplace(PATHS.SIGN_IN);
+    }
+  }, [
+    session,
+    isOnboarded,
+    isLoading,
+    segments,
+    isRecoverySession,
+    safeReplace,
+  ]);
 
   /**
    * 3) Boot: check conexión + init store + ocultar splash
