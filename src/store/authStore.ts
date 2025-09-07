@@ -223,11 +223,29 @@ export const useAuthStore = create<AuthState>()(
     {
       name: 'finyvo-auth-storage',
       storage: createJSONStorage(() => AsyncStorage),
-      // Persistimos SOLO el mapa de onboarding + legacy (para migración).
+
+      // ⬅️ Nueva versión de storage
+      version: 2,
+
+      // ⬅️ Migración: elimina la clave legacy 'isOnboarded' si existe (boolean vieja)
+      migrate: (persisted: any, fromVersion) => {
+        const p = persisted ?? {};
+        if ('isOnboarded' in p && typeof p.isOnboarded !== 'function') {
+          delete p.isOnboarded;
+        }
+        // Asegura defaults por si no existieran
+        if (!p.onboardedByUserId) p.onboardedByUserId = {};
+        if (typeof p._legacyIsOnboarded === 'undefined')
+          p._legacyIsOnboarded = false;
+        return p;
+      },
+
+      // Solo persiste lo que necesitas (como ya tenías)
       partialize: (state) => ({
         onboardedByUserId: state.onboardedByUserId,
         _legacyIsOnboarded: state._legacyIsOnboarded ?? false,
       }),
+
       onRehydrateStorage: () => (state) => {
         console.log('💧 Rehidratando auth store...');
         if (state) {
@@ -235,7 +253,7 @@ export const useAuthStore = create<AuthState>()(
             '📋 Onboarded map keys:',
             Object.keys(state.onboardedByUserId || {}),
           );
-          if (state._legacyIsOnboarded) {
+          if ((state as any)._legacyIsOnboarded) {
             console.log(
               '⚠️ Legacy isOnboarded=true detectado (migrará al iniciar sesión)',
             );
