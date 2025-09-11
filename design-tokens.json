@@ -1,0 +1,37 @@
+{
+  "colors": {
+    "surface": "#FFFFFF",
+    "surfaceMuted": "#F6F7FB",
+    "surfaceAlt": "#F6F7FB",
+
+    "border": "#E5E7EB",
+
+    "textPrimary": "#0F172A",
+    "textSecondary": "#64748B",
+    "textHint": "#94A3B8",
+    "textMuted": "#6B7280",
+    "muted": "#6B7280",
+
+    "brand": {
+      "navy": "#0B2447",
+      "navyBg": "#E9EEF6"
+    },
+
+    "error": {
+      "fg": "#B91C1C",
+      "bg": "#FEE2E2",
+      "text": "#B91C1C"
+    },
+
+    "success": {
+      "fg": "#16A34A",
+      "bg": "#DCFCE7"
+    },
+
+    "raw": {
+      "white": "#FFFFFF",
+      "black": "#000000",
+      "transparent": "transparent"
+    }
+  }
+}

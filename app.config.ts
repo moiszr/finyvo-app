@@ -8,6 +8,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   version: '1.0.0',
   orientation: 'portrait',
   scheme: 'finyvo', // deep links: finyvo://...
+
   userInterfaceStyle: 'automatic',
   newArchEnabled: true,
 
@@ -32,7 +33,7 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ],
   },
 
-  web: {},
+  web: { bundler: 'metro' },
 
   assetBundlePatterns: ['**/*'],
 
