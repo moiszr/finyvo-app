@@ -1,46 +1,63 @@
-// features/auth/components/LoginForm.tsx
-import React, { useRef, useState, useCallback, useEffect } from 'react';
+// src/features/auth/components/LoginForm.tsx
+import React, { useRef, useState, useCallback } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   TextInput,
-  Alert,
+  StyleSheet,
+  Keyboard,
+  Pressable,
 } from 'react-native';
 import { Link } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button, SocialButton, Input } from '@/components/ui';
 import { useSignIn } from '../hooks/useSignIn';
 import { useSocialSignIn } from '../hooks/useSocialSignIn';
 import type { SignInCredentials } from '../types';
-import { Ionicons } from '@expo/vector-icons';
 import type { SocialProvider } from '../hooks/useSocialSignIn';
-import { colors, spacing } from '@/themes/index';
+import { Ionicons } from '@expo/vector-icons';
+import { colors } from '@/design';
 
-// ============================================================================
-// MAIN COMPONENT
-// ============================================================================
+// Constantes
+const VALIDATION_RULES = {
+  email: {
+    pattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+    errorEmpty: 'Ingresa tu email',
+    errorInvalid: 'Email inválido',
+  },
+  password: {
+    minLength: 8,
+    errorEmpty: 'Ingresa tu contraseña',
+    errorShort: 'Mínimo 8 caracteres',
+  },
+} as const;
 
 export function LoginForm() {
-  // Estado del formulario
+  const insets = useSafeAreaInsets();
+
+  // State
   const [credentials, setCredentials] = useState<SignInCredentials>({
     email: '',
     password: '',
   });
-  const [errors, setErrors] = useState<Partial<SignInCredentials>>({});
+  const [fieldErrors, setFieldErrors] = useState<Partial<SignInCredentials>>(
+    {},
+  );
 
-  // Referencias
+  // Refs
   const passwordRef = useRef<TextInput>(null);
 
-  // Hooks de autenticación
+  // Hooks
   const {
     signIn,
-    loading: emailLoading,
-    error: emailError,
-    clearError,
+    loading: signInLoading,
+    error: signInError,
+    clearError: clearSignInError,
   } = useSignIn();
+
   const {
     loading: socialLoading,
     error: socialError,
@@ -52,241 +69,266 @@ export function LoginForm() {
     isProcessing,
   } = useSocialSignIn();
 
-  // Estado derivado
-  const isAnyLoading = emailLoading || !!socialLoading || isProcessing;
-  const currentError = emailError || socialError;
+  // Derived state
+  const isAnyLoading = signInLoading || !!socialLoading || isProcessing;
+  const globalError = signInError || socialError;
 
-  // ============================================================================
-  // EFFECTS
-  // ============================================================================
+  // Helpers
+  const updateField = useCallback(
+    <K extends keyof SignInCredentials>(field: K, value: string) => {
+      setCredentials((prev) => ({ ...prev, [field]: value }));
 
-  // Limpiar errores cuando cambien las credenciales
-  useEffect(() => {
-    if (currentError) {
-      clearError();
-      clearSocialError();
-    }
-  }, [credentials.email, credentials.password]);
+      // Limpiar error del campo cuando el usuario empieza a escribir
+      if (fieldErrors[field]) {
+        setFieldErrors((prev) => ({ ...prev, [field]: undefined }));
+      }
 
-  // Alert para “cuenta ya existe” en social login
-  useEffect(() => {
-    if (socialError?.includes('Ya existe una cuenta')) {
-      Alert.alert(
-        'Cuenta Existente',
-        'Ya tienes una cuenta con este email. Intenta iniciar sesión con tu email y contraseña.',
-        [{ text: 'OK', onPress: clearSocialError }],
-      );
-    }
-  }, [socialError, clearSocialError]);
-
-  // ============================================================================
-  // HANDLERS
-  // ============================================================================
-
-  const setField = useCallback(
-    (key: keyof SignInCredentials, value: string) => {
-      setCredentials((prev) => ({ ...prev, [key]: value }));
-      if (errors[key]) {
-        setErrors((prev) => ({ ...prev, [key]: undefined }));
+      // Limpiar errores globales cuando el usuario modifica cualquier campo
+      if (globalError) {
+        clearSignInError();
+        clearSocialError();
       }
     },
-    [errors],
+    [fieldErrors, globalError, clearSignInError, clearSocialError],
   );
 
-  const validate = useCallback((): boolean => {
-    const newErrors: Partial<SignInCredentials> = {};
-    const email = credentials.email.trim();
-    const password = credentials.password;
+  const validateForm = useCallback((): boolean => {
+    const errors: Partial<SignInCredentials> = {};
+    const { email, password } = credentials;
+    const rules = VALIDATION_RULES;
 
-    if (!email) {
-      newErrors.email = 'Ingresa tu email';
-    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      newErrors.email = 'Email inválido';
+    // Validar email
+    const mail = email.trim();
+    if (!mail) {
+      errors.email = rules.email.errorEmpty;
+    } else if (!rules.email.pattern.test(mail)) {
+      errors.email = rules.email.errorInvalid;
     }
 
+    // Validar contraseña
     if (!password) {
-      newErrors.password = 'Ingresa tu contraseña';
-    } else if (password.length < 6) {
-      newErrors.password = 'Mínimo 6 caracteres';
+      errors.password = rules.password.errorEmpty;
+    } else if (password.length < rules.password.minLength) {
+      errors.password = rules.password.errorShort;
     }
 
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    setFieldErrors(errors);
+    return Object.keys(errors).length === 0;
   }, [credentials]);
 
   const handleSubmit = useCallback(async () => {
-    clearError();
-    clearSocialError();
+    Keyboard.dismiss();
 
-    if (!validate()) return;
+    if (!validateForm()) return;
 
     await signIn({
       email: credentials.email.trim(),
       password: credentials.password,
     });
-  }, [credentials, validate, signIn, clearError, clearSocialError]);
+  }, [credentials, validateForm, signIn]);
 
   const handleSocialLogin = useCallback(
-    async (provider: SocialProvider, loginMethod: () => Promise<void>) => {
-      clearError();
+    async (provider: SocialProvider, method: () => Promise<void>) => {
+      clearSignInError();
       clearSocialError();
+
       try {
-        await loginMethod();
-      } catch (error) {
-        console.error(`Error en login con ${provider}:`, error);
+        await method();
+      } catch (err) {
+        console.error(`Error en login con ${provider}:`, err);
       }
     },
-    [clearError, clearSocialError],
+    [clearSignInError, clearSocialError],
   );
 
-  // ============================================================================
-  // RENDER
-  // ============================================================================
+  // Render helpers
+  const renderHeader = () => (
+    <View className="mb-8 items-center">
+      <View
+        className="mb-4 h-16 w-16 items-center justify-center rounded-2xl"
+        style={{ backgroundColor: colors.brand.navyBg }}
+      >
+        <Ionicons name="person-outline" size={28} color={colors.brand.navy} />
+      </View>
+      <Text className="mb-2 text-[28px] font-extrabold text-slate-900">
+        Inicia sesión
+      </Text>
+      <Text className="text-[15px] tracking-[0.3px] text-slate-600">
+        Organiza, ahorra y avanza
+      </Text>
+    </View>
+  );
 
+  const renderGlobalError = () => {
+    if (!globalError) return null;
+
+    return (
+      <View
+        accessibilityRole="alert"
+        className="mb-3 rounded-2xl border px-3.5 py-3"
+        style={{
+          backgroundColor: colors.error.bg,
+          borderColor: '#FCA5A5',
+        }}
+      >
+        <View className="flex-row items-center">
+          <Ionicons name="alert-circle" size={18} color={colors.error.fg} />
+          <Text
+            className="ml-2 flex-1 self-center text-[14px] font-semibold"
+            style={{
+              color: colors.error.fg,
+              includeFontPadding: false,
+              lineHeight: 18,
+            }}
+            numberOfLines={3}
+          >
+            {globalError}
+          </Text>
+          <Pressable
+            onPress={() => {
+              clearSignInError();
+              clearSocialError();
+            }}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+            className="-mr-1 ml-2 self-center p-1"
+            accessibilityRole="button"
+            accessibilityLabel="Cerrar alerta"
+          >
+            <Ionicons name="close" size={16} color={colors.error.fg} />
+          </Pressable>
+        </View>
+      </View>
+    );
+  };
+
+  const renderSocialButtons = () => (
+    <View className="mb-2">
+      <View className="flex-row justify-center gap-4">
+        <SocialButton
+          provider="apple"
+          onPress={() => handleSocialLogin('apple', signInWithApple)}
+          disabled={isAnyLoading}
+          loading={isLoading('apple')}
+        />
+        <SocialButton
+          provider="google"
+          onPress={() => handleSocialLogin('google', signInWithGoogle)}
+          disabled={isAnyLoading}
+          loading={isLoading('google')}
+        />
+        <SocialButton
+          provider="facebook"
+          onPress={() => handleSocialLogin('facebook', signInWithFacebook)}
+          disabled={isAnyLoading}
+          loading={isLoading('facebook')}
+        />
+      </View>
+
+      {isProcessing && !socialLoading && (
+        <Text className="mt-3 text-center text-[13px] italic text-slate-500">
+          Completando inicio de sesión...
+        </Text>
+      )}
+    </View>
+  );
+
+  // Main render
   return (
-    <KeyboardAvoidingView
-      style={styles.root}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
+    <KeyboardAvoidingView className="flex-1 bg-surface" behavior={undefined}>
       <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={styles.content}
+        className="flex-1"
+        contentContainerStyle={{
+          flexGrow: 1,
+          paddingBottom: Math.max(12, insets.bottom),
+        }}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        {/* Bloque principal centrado verticalmente */}
-        <View style={styles.main}>
-          {/* Header */}
-          <View style={styles.header}>
-            <View style={styles.logoCircle}>
-              <Ionicons
-                name="person-outline"
-                size={28}
-                color={colors.brand.navy}
+        <View className="flex-1 justify-center px-6 py-8">
+          {renderHeader()}
+
+          {/* Form */}
+          <View className="mt-1">
+            <View className="mb-3">
+              <Input
+                placeholder="Ingresa tu email"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                autoCorrect={false}
+                autoComplete="email"
+                value={credentials.email}
+                onChangeText={(text) => updateField('email', text)}
+                returnKeyType="next"
+                onSubmitEditing={() => passwordRef.current?.focus()}
+                error={fieldErrors.email}
+                editable={!isAnyLoading}
               />
             </View>
-            <Text style={styles.title}>Inicia sesión</Text>
-            <Text style={styles.subtitle}>Organiza, ahorra y avanza</Text>
-          </View>
 
-          {/* Formulario */}
-          <View style={styles.form}>
-            <Input
-              placeholder="Ingresa tu email"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="email"
-              value={credentials.email}
-              onChangeText={(text) => setField('email', text)}
-              returnKeyType="next"
-              onSubmitEditing={() => passwordRef.current?.focus()}
-              error={errors.email}
-              containerStyle={{ marginBottom: spacing.formGap }}
-              editable={!isAnyLoading}
-            />
+            <View className="mb-2">
+              <Input
+                ref={passwordRef}
+                placeholder="Ingresa tu contraseña"
+                value={credentials.password}
+                onChangeText={(text) => updateField('password', text)}
+                secureTextEntry
+                secureToggle
+                textContentType="password"
+                autoComplete="password"
+                returnKeyType="go"
+                onSubmitEditing={handleSubmit}
+                error={fieldErrors.password}
+                editable={!isAnyLoading}
+              />
+            </View>
 
-            <Input
-              ref={passwordRef}
-              placeholder="Ingresa tu contraseña"
-              value={credentials.password}
-              onChangeText={(text) => setField('password', text)}
-              secureTextEntry
-              secureToggle
-              textContentType="password"
-              autoComplete="password"
-              returnKeyType="go"
-              onSubmitEditing={handleSubmit}
-              error={errors.password}
-              containerStyle={{ marginBottom: spacing.xs }}
-              editable={!isAnyLoading}
-            />
-
-            {/* Forgot password */}
-            <View style={styles.rowRight}>
+            {/* Forgot password link */}
+            <View className="mb-3 mt-1 items-end">
               <Link
                 href="/(auth)/forgot-password"
-                style={[styles.linkMuted, isAnyLoading && styles.linkDisabled]}
-                disabled={isAnyLoading}
+                className={`text-[14px] font-semibold ${
+                  isAnyLoading ? 'opacity-50' : 'text-brand-navy'
+                }`}
+                aria-disabled={isAnyLoading}
               >
                 ¿Olvidaste tu contraseña?
               </Link>
             </View>
 
-            {/* Error global */}
-            {currentError && !socialError?.includes('Ya existe una cuenta') ? (
-              <View style={styles.errorContainer}>
-                <Ionicons
-                  name="warning-outline"
-                  size={16}
-                  color={colors.error.fg}
-                />
-                <Text style={styles.errorText}>{currentError}</Text>
-              </View>
-            ) : null}
+            {renderGlobalError()}
 
-            {/* CTA Principal */}
             <Button
               title="Entrar"
               onPress={handleSubmit}
-              loading={emailLoading}
+              loading={signInLoading}
               disabled={isAnyLoading}
               accessibilityHint="Iniciar sesión en tu cuenta"
-              style={styles.primaryCta}
+              style={{ marginTop: 6, marginBottom: 20 }}
             />
           </View>
 
           {/* Divider */}
-          <View style={styles.divider}>
-            <View style={styles.line} />
-            <Text style={styles.dividerText}>o continuar con</Text>
-            <View style={styles.line} />
+          <View className="mb-5 mt-2 flex-row items-center gap-3">
+            <View style={styles.hairline} />
+            <Text className="text-[13px] font-semibold tracking-[0.5px] text-slate-400">
+              o continuar con
+            </Text>
+            <View style={styles.hairline} />
           </View>
 
-          {/* Social Login */}
-          <View style={styles.socialSection}>
-            <View style={styles.socialRow}>
-              <SocialButton
-                provider="apple"
-                onPress={() => handleSocialLogin('apple', signInWithApple)}
-                disabled={isAnyLoading}
-                loading={isLoading('apple')}
-              />
-
-              <SocialButton
-                provider="google"
-                onPress={() => handleSocialLogin('google', signInWithGoogle)}
-                disabled={isAnyLoading}
-                loading={isLoading('google')}
-              />
-
-              <SocialButton
-                provider="facebook"
-                onPress={() =>
-                  handleSocialLogin('facebook', signInWithFacebook)
-                }
-                disabled={isAnyLoading}
-                loading={isLoading('facebook')}
-              />
-            </View>
-
-            {/* Indicador de procesamiento */}
-            {isProcessing && !socialLoading && (
-              <Text style={styles.processingText}>
-                Completando inicio de sesión...
-              </Text>
-            )}
-          </View>
+          {renderSocialButtons()}
         </View>
 
         {/* Footer */}
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>
+        <View className="mt-4 items-center pb-2 pt-2">
+          <Text className="text-[15px] text-slate-600">
             ¿No tienes cuenta?{' '}
             <Link
               href="/(auth)/sign-up"
-              style={[styles.footerLink, isAnyLoading && styles.linkDisabled]}
-              disabled={isAnyLoading}
+              className={`font-bold ${
+                isAnyLoading ? 'opacity-50' : 'text-brand-navy'
+              }`}
+              aria-disabled={isAnyLoading}
             >
               Regístrate
             </Link>
@@ -297,142 +339,10 @@ export function LoginForm() {
   );
 }
 
-// ============================================================================
-// STYLES
-// ============================================================================
-
 const styles = StyleSheet.create({
-  root: {
-    flex: 1,
-    backgroundColor: colors.surface,
-  },
-  content: {
-    flexGrow: 1,
-    paddingHorizontal: spacing.gutter, // 24
-    paddingVertical: spacing.xl, // 16 (si quieres 24, usa xl también)
-  },
-  main: {
-    flexGrow: 1,
-    justifyContent: 'center',
-  },
-
-  // Header
-  header: {
-    alignItems: 'center',
-    marginBottom: 32,
-  },
-  logoCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 20,
-    backgroundColor: colors.brand.navyBg,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 16,
-  },
-  title: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: colors.textPrimary,
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 15,
-    color: colors.textSecondary,
-    letterSpacing: 0.3,
-  },
-
-  // Form
-  form: {
-    marginTop: 4,
-  },
-  rowRight: {
-    alignItems: 'flex-end',
-    marginTop: 6,
-    marginBottom: 14,
-  },
-  linkMuted: {
-    color: colors.brand.navy,
-    fontWeight: '600',
-    fontSize: 14,
-  },
-  linkDisabled: {
-    opacity: 0.5,
-  },
-
-  // Errors (match tokens)
-  errorContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.error.bg,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderRadius: 8,
-    marginBottom: 12,
-    gap: 8,
-  },
-  errorText: {
-    flex: 1,
-    color: colors.error.fg,
-    fontSize: 14,
-  },
-
-  primaryCta: {
-    marginTop: 6,
-    marginBottom: 20,
-    backgroundColor: colors.brand.navy,
-    borderColor: colors.brand.navy,
-  },
-
-  // Divider
-  divider: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginTop: 8,
-    marginBottom: 20,
-  },
-  line: {
+  hairline: {
     flex: 1,
     height: StyleSheet.hairlineWidth,
     backgroundColor: colors.border,
-  },
-  dividerText: {
-    color: colors.textHint,
-    fontSize: 13,
-    fontWeight: '600',
-    letterSpacing: 0.5,
-  },
-
-  // Social
-  socialSection: {
-    marginBottom: 8,
-  },
-  socialRow: {
-    flexDirection: 'row',
-    justifyContent: 'center',
-    gap: 16,
-  },
-  processingText: {
-    textAlign: 'center',
-    color: colors.textMuted,
-    fontSize: 13,
-    marginTop: 12,
-    fontStyle: 'italic',
-  },
-
-  // Footer
-  footer: {
-    alignItems: 'center',
-    marginTop: 16,
-    paddingTop: 8,
-  },
-  footerText: {
-    color: colors.textSecondary,
-    fontSize: 15,
-  },
-  footerLink: {
-    color: colors.brand.navy,
-    fontWeight: '700',
   },
 });

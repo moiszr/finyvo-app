@@ -1,398 +1,480 @@
 // src/features/auth/components/ResetPasswordForm.tsx
-import React, {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   Animated,
   Easing,
   TextInput,
+  StyleSheet,
+  Keyboard,
 } from 'react-native';
+import { useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button, Input, LoadingScreen } from '@/components/ui';
 import { useResetPassword } from '../hooks/useResetPassword';
+import { useAuthStore } from '@/store/authStore';
 import type { ResetPasswordCredentials } from '../types';
 import { Ionicons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import { useAuthStore } from '@/store/authStore';
-import { colors, spacing } from '@/themes/index';
+import { colors } from '@/design';
 
-const CIRCLE = 86;
-const AUTO_REDIRECT_MS = 3000;
-const INVALID_DEBOUNCE_MS = 250; // evita destello de "enlace inválido"
+// Constantes
+const CIRCLE_SIZE = 86;
+const AUTO_REDIRECT_DELAY = 3000;
+const INVALID_LINK_DELAY = 250;
+
+const PASSWORD_RULES_IOS =
+  'minlength: 8; required: lower; required: upper; required: digit; allowed: ascii;';
+
+const VALIDATION_RULES = {
+  password: {
+    minLength: 8,
+    errorEmpty: 'Ingresa una contraseña',
+    errorShort: 'Mínimo 8 caracteres',
+  },
+  confirmPassword: {
+    errorEmpty: 'Confirma tu contraseña',
+    errorMismatch: 'Las contraseñas no coinciden',
+  },
+} as const;
+
+const ANIMATION_CONFIG = {
+  checkPop: {
+    friction: 6,
+    tension: 120,
+  },
+  fade: {
+    duration: 260,
+  },
+  ripple: {
+    duration1: 1600,
+    duration2: 2000,
+    delay2: 120,
+  },
+} as const;
 
 export function ResetPasswordForm() {
   const router = useRouter();
-  const { setRecoverySession } = useAuthStore(); // libera la guarda global
+  const insets = useSafeAreaInsets();
+  const { setRecoverySession } = useAuthStore();
 
-  // -------------------------
   // State
-  // -------------------------
   const [credentials, setCredentials] = useState<ResetPasswordCredentials>({
     password: '',
     confirmPassword: '',
   });
-  const [errors, setErrors] = useState<Partial<ResetPasswordCredentials>>({});
-  const [success, setSuccess] = useState(false);
+  const [fieldErrors, setFieldErrors] = useState<
+    Partial<ResetPasswordCredentials>
+  >({});
+  const [isSuccess, setIsSuccess] = useState(false);
 
-  // Inputs refs
-  const passRef = useRef<TextInput>(null);
+  // Refs
   const confirmRef = useRef<TextInput>(null);
+  const redirectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Lógica de reset (usa la versión del hook que NO navega automáticamente)
+  // Hook
   const {
     resetPassword,
     loading,
-    error,
+    error: globalError,
     tokensProcessed,
     clearError,
     booting,
-    signOutForReset, // <- importante para que RootGuard no te mande al dashboard
+    signOutForReset,
   } = useResetPassword();
 
-  // Debounce para no mostrar "enlace inválido" por un parpadeo
-  const [invalidDelay, setInvalidDelay] = useState(true);
+  // Animaciones
+  const animations = useRef({
+    checkPop: new Animated.Value(0),
+    ripple1: new Animated.Value(0),
+    ripple2: new Animated.Value(0),
+    fade: new Animated.Value(0),
+  }).current;
+
+  // Evitar destello de "enlace inválido"
+  const [showInvalidLink, setShowInvalidLink] = useState(false);
+
   useEffect(() => {
-    if (!booting) {
-      const t = setTimeout(() => setInvalidDelay(false), INVALID_DEBOUNCE_MS);
-      return () => clearTimeout(t);
-    } else {
-      setInvalidDelay(true);
+    if (!booting && !tokensProcessed && globalError) {
+      const timer = setTimeout(
+        () => setShowInvalidLink(true),
+        INVALID_LINK_DELAY,
+      );
+      return () => clearTimeout(timer);
     }
-  }, [booting]);
+    setShowInvalidLink(false);
+  }, [booting, tokensProcessed, globalError]);
 
-  // Flags de UI
-  const showLoading = booting;
-  const showInvalid = useMemo(
-    () => !invalidDelay && !!error && !tokensProcessed && !success,
-    [invalidDelay, error, tokensProcessed, success],
-  );
-
-  // -------------------------
   // Animación de éxito
-  // -------------------------
-  const checkPop = useRef(new Animated.Value(0)).current;
-  const ripple1 = useRef(new Animated.Value(0)).current;
-  const ripple2 = useRef(new Animated.Value(0)).current;
-  const fade = useRef(new Animated.Value(0)).current;
-  const redirectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   useEffect(() => {
-    if (!success) return;
+    if (!isSuccess) return;
 
-    // Limpia recovery y cierra sesión ANTES del redirect (y ANTES de que el guard intervenga)
+    // Limpiar sesión de recuperación
     (async () => {
       try {
-        setRecoverySession(false); // suelta la guarda de /reset-password
-        await signOutForReset(); // evita que te envíe al dashboard
-      } catch {}
+        setRecoverySession(false);
+        await signOutForReset();
+      } catch (err) {
+        console.error('Error clearing recovery session:', err);
+      }
     })();
 
-    // Reset & start anims
-    checkPop.setValue(0);
-    ripple1.setValue(0);
-    ripple2.setValue(0);
-    fade.setValue(0);
+    // Reset animaciones
+    Object.values(animations).forEach((anim) => anim.setValue(0));
 
-    const popAnim = Animated.spring(checkPop, {
+    // Configurar animaciones
+    const checkAnim = Animated.spring(animations.checkPop, {
       toValue: 1,
-      friction: 6,
-      tension: 120,
+      ...ANIMATION_CONFIG.checkPop,
       useNativeDriver: true,
     });
-    const showText = Animated.timing(fade, {
+
+    const fadeAnim = Animated.timing(animations.fade, {
       toValue: 1,
-      duration: 260,
+      duration: ANIMATION_CONFIG.fade.duration,
       easing: Easing.out(Easing.quad),
       useNativeDriver: true,
     });
-    const loop1 = Animated.loop(
-      Animated.timing(ripple1, {
-        toValue: 1,
-        duration: 1600,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-        isInteraction: false,
-      }),
-    );
-    const loop2 = Animated.loop(
-      Animated.timing(ripple2, {
-        toValue: 1,
-        duration: 2000,
-        delay: 120,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-        isInteraction: false,
-      }),
+
+    const createRippleLoop = (
+      anim: Animated.Value,
+      duration: number,
+      delay = 0,
+    ) =>
+      Animated.loop(
+        Animated.timing(anim, {
+          toValue: 1,
+          duration,
+          delay,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+          isInteraction: false,
+        }),
+      );
+
+    const ripple1Loop = createRippleLoop(
+      animations.ripple1,
+      ANIMATION_CONFIG.ripple.duration1,
     );
 
-    popAnim.start();
-    loop1.start();
-    loop2.start();
-    showText.start();
+    const ripple2Loop = createRippleLoop(
+      animations.ripple2,
+      ANIMATION_CONFIG.ripple.duration2,
+      ANIMATION_CONFIG.ripple.delay2,
+    );
 
-    // Redirect a Sign In en 3s
-    redirectTimerRef.current = setTimeout(() => {
+    // Iniciar animaciones
+    checkAnim.start();
+    fadeAnim.start();
+    ripple1Loop.start();
+    ripple2Loop.start();
+
+    // Auto-redirect
+    redirectTimer.current = setTimeout(() => {
       router.replace('/(auth)/sign-in');
-    }, AUTO_REDIRECT_MS);
+    }, AUTO_REDIRECT_DELAY);
 
+    // Cleanup
     return () => {
-      loop1.stop();
-      loop2.stop();
-      if (redirectTimerRef.current) clearTimeout(redirectTimerRef.current);
+      ripple1Loop.stop();
+      ripple2Loop.stop();
+      if (redirectTimer.current) {
+        clearTimeout(redirectTimer.current);
+      }
     };
-  }, [
-    success,
-    router,
-    setRecoverySession,
-    signOutForReset,
-    checkPop,
-    ripple1,
-    ripple2,
-    fade,
-  ]);
+  }, [isSuccess, router, setRecoverySession, signOutForReset, animations]);
 
-  // -------------------------
-  // Validación y handlers (estilo Login)
-  // -------------------------
-  const setField = useCallback(
-    (k: keyof ResetPasswordCredentials, v: string) => {
-      setCredentials((prev) => ({ ...prev, [k]: v }));
-      if (errors[k]) setErrors((prev) => ({ ...prev, [k]: undefined }));
-      if (error) clearError();
+  // Helpers
+  const updateField = useCallback(
+    <K extends keyof ResetPasswordCredentials>(field: K, value: string) => {
+      setCredentials((prev) => ({ ...prev, [field]: value }));
+
+      // Limpiar errores cuando el usuario escribe
+      if (fieldErrors[field]) {
+        setFieldErrors((prev) => ({ ...prev, [field]: undefined }));
+      }
+      if (globalError) {
+        clearError();
+      }
     },
-    [errors, error, clearError],
+    [fieldErrors, globalError, clearError],
   );
 
   const validateForm = useCallback((): boolean => {
-    const e: Partial<ResetPasswordCredentials> = {};
-    const p = credentials.password.trim();
-    const c = credentials.confirmPassword.trim();
+    const errors: Partial<ResetPasswordCredentials> = {};
+    const { password, confirmPassword } = credentials;
+    const rules = VALIDATION_RULES;
 
-    if (!p) e.password = 'Ingresa una contraseña';
-    else if (p.length < 8) e.password = 'Mínimo 8 caracteres';
+    // Validar contraseña
+    const pass = password.trim();
+    if (!pass) {
+      errors.password = rules.password.errorEmpty;
+    } else if (pass.length < rules.password.minLength) {
+      errors.password = rules.password.errorShort;
+    }
 
-    if (!c) e.confirmPassword = 'Confirma tu contraseña';
-    else if (p !== c) e.confirmPassword = 'Las contraseñas no coinciden';
+    // Validar confirmación
+    const confirm = confirmPassword.trim();
+    if (!confirm) {
+      errors.confirmPassword = rules.confirmPassword.errorEmpty;
+    } else if (pass !== confirm) {
+      errors.confirmPassword = rules.confirmPassword.errorMismatch;
+    }
 
-    setErrors(e);
-    return Object.keys(e).length === 0;
+    setFieldErrors(errors);
+    return Object.keys(errors).length === 0;
   }, [credentials]);
 
   const handleSubmit = useCallback(async () => {
-    clearError();
+    Keyboard.dismiss();
+
     if (!validateForm()) return;
 
-    try {
-      const res = await resetPassword(credentials);
-      if (res.ok) setSuccess(true); // mostramos animación; el redirect lo maneja el efecto
-    } catch {
-      // el hook ya setea `error`
+    const result = await resetPassword(credentials);
+    if (result.ok) {
+      setIsSuccess(true);
     }
-  }, [credentials, validateForm, resetPassword, clearError]);
+  }, [credentials, validateForm, resetPassword]);
 
-  // Interpolaciones (solo si success)
-  const rippleScale1 = ripple1.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.6, 2.0],
-  });
-  const rippleOpacity1 = ripple1.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.25, 0],
-  });
-  const rippleScale2 = ripple2.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.6, 2.4],
-  });
-  const rippleOpacity2 = ripple2.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0.18, 0],
-  });
+  const handleRedirectNow = useCallback(() => {
+    if (redirectTimer.current) {
+      clearTimeout(redirectTimer.current);
+    }
+    router.replace('/(auth)/sign-in');
+  }, [router]);
 
-  // -------------------------
-  // Render (estructura igual a Login)
-  // -------------------------
-  if (showLoading) return <LoadingScreen message="Verificando enlace..." />;
+  // Render helpers
+  const renderSuccessAnimation = () => {
+    const rippleInterpolations = [
+      {
+        scale: animations.ripple1.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.6, 2.0],
+        }),
+        opacity: animations.ripple1.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.25, 0],
+        }),
+      },
+      {
+        scale: animations.ripple2.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.6, 2.4],
+        }),
+        opacity: animations.ripple2.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.18, 0],
+        }),
+      },
+    ];
 
+    return (
+      <View
+        className="mb-4 items-center justify-center"
+        style={{ width: CIRCLE_SIZE * 2.2, height: CIRCLE_SIZE * 2.2 }}
+        pointerEvents="none"
+      >
+        {rippleInterpolations.map((interpolation, index) => (
+          <Animated.View
+            key={`ripple-${index}`}
+            style={[
+              styles.ripple,
+              {
+                transform: [{ scale: interpolation.scale }],
+                opacity: interpolation.opacity,
+                backgroundColor: colors.brand.navy,
+              },
+            ]}
+          />
+        ))}
+        <Animated.View
+          style={[
+            styles.checkCircle,
+            {
+              transform: [{ scale: animations.checkPop }],
+              backgroundColor: colors.brand.navy,
+            },
+          ]}
+        >
+          <Ionicons name="checkmark" size={34} color={colors.raw.white} />
+        </Animated.View>
+      </View>
+    );
+  };
+
+  const renderHeader = () => {
+    if (showInvalidLink) {
+      return (
+        <>
+          <View
+            className="mb-4 h-16 w-16 items-center justify-center rounded-2xl"
+            style={{ backgroundColor: colors.error.bg }}
+          >
+            <Ionicons name="alert-circle" size={28} color={colors.error.fg} />
+          </View>
+          <Text className="mb-1 text-center text-[28px] font-extrabold text-slate-900">
+            Enlace inválido
+          </Text>
+          <Text className="text-center text-[15px] leading-5 text-slate-600">
+            {globalError ||
+              'El enlace para restablecer tu contraseña no es válido o expiró.'}
+          </Text>
+        </>
+      );
+    }
+
+    if (isSuccess) {
+      return (
+        <>
+          {renderSuccessAnimation()}
+          <Text className="mb-1 text-center text-[28px] font-extrabold text-slate-900">
+            ¡Contraseña actualizada!
+          </Text>
+          <Animated.Text
+            className="text-center text-[15px] leading-5 text-slate-600"
+            style={{ opacity: animations.fade }}
+          >
+            Te llevaremos a iniciar sesión en unos segundos…
+          </Animated.Text>
+        </>
+      );
+    }
+
+    return (
+      <>
+        <View
+          className="mb-4 h-16 w-16 items-center justify-center rounded-2xl"
+          style={{ backgroundColor: colors.brand.navyBg }}
+        >
+          <Ionicons
+            name="lock-closed-outline"
+            size={28}
+            color={colors.brand.navy}
+          />
+        </View>
+        <Text className="mb-1 text-center text-[28px] font-extrabold text-slate-900">
+          Nueva contraseña
+        </Text>
+        <Text className="text-center text-[15px] leading-5 text-slate-600">
+          Elige una contraseña segura para tu cuenta.
+        </Text>
+      </>
+    );
+  };
+
+  const renderForm = () => {
+    if (showInvalidLink || isSuccess) {
+      if (isSuccess) {
+        return (
+          <Button
+            title="Ir a iniciar sesión ahora"
+            onPress={handleRedirectNow}
+            style={{ marginTop: 12, marginBottom: 16, alignSelf: 'stretch' }}
+            accessibilityHint="Ir inmediatamente a la pantalla de inicio de sesión"
+          />
+        );
+      }
+      return null;
+    }
+
+    return (
+      <View className="mt-1">
+        <View className="mb-3">
+          <Input
+            placeholder="Ingresa tu nueva contraseña (mín. 8)"
+            value={credentials.password}
+            onChangeText={(text) => updateField('password', text)}
+            secureTextEntry
+            secureToggle
+            textContentType="newPassword"
+            autoComplete="password-new"
+            // @ts-ignore
+            passwordRules={
+              Platform.OS === 'ios' ? PASSWORD_RULES_IOS : undefined
+            }
+            returnKeyType="next"
+            onSubmitEditing={() => confirmRef.current?.focus()}
+            error={fieldErrors.password}
+            editable={!loading}
+          />
+        </View>
+
+        <View className="mb-2">
+          <Input
+            ref={confirmRef}
+            placeholder="Confirma tu nueva contraseña"
+            value={credentials.confirmPassword}
+            onChangeText={(text) => updateField('confirmPassword', text)}
+            secureTextEntry
+            secureToggle
+            textContentType="newPassword"
+            autoComplete="off"
+            returnKeyType="go"
+            onSubmitEditing={handleSubmit}
+            error={fieldErrors.confirmPassword}
+            editable={!loading}
+          />
+        </View>
+
+        {globalError && (
+          <View
+            className="mb-4 flex-row items-center gap-2 rounded-lg px-3 py-2.5"
+            style={{ backgroundColor: colors.error.bg }}
+            accessibilityRole="alert"
+          >
+            <Ionicons
+              name="warning-outline"
+              size={16}
+              color={colors.error.fg}
+            />
+            <Text
+              className="flex-1 text-[14px]"
+              style={{ color: colors.error.fg }}
+            >
+              {globalError}
+            </Text>
+          </View>
+        )}
+
+        <Button
+          title="Actualizar contraseña"
+          onPress={handleSubmit}
+          loading={loading}
+          disabled={loading}
+          style={{ marginTop: 12, marginBottom: 16 }}
+          accessibilityHint="Guardar nueva contraseña"
+        />
+
+        <Text className="text-center text-[12px] text-slate-400">
+          Usa al menos 8 caracteres. Combina letras, números y símbolos.
+        </Text>
+      </View>
+    );
+  };
+
+  // Loading state
+  if (booting) {
+    return <LoadingScreen message="Verificando enlace..." />;
+  }
+
+  // Main render
   return (
-    <KeyboardAvoidingView
-      style={styles.root}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
+    <KeyboardAvoidingView className="flex-1 bg-surface" behavior={undefined}>
       <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={styles.content}
+        className="flex-1"
+        contentContainerStyle={{
+          flexGrow: 1,
+          paddingBottom: Math.max(12, insets.bottom),
+        }}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.main}>
-          {/* ======= Header ======= */}
-          <View style={styles.header}>
-            {showInvalid ? (
-              <View
-                style={[
-                  styles.logoCircle,
-                  { backgroundColor: colors.error.bg },
-                ]}
-              >
-                <Ionicons
-                  name="alert-circle"
-                  size={28}
-                  color={colors.error.fg}
-                />
-              </View>
-            ) : success ? (
-              // Éxito: solo animación (sin icono de candado)
-              <View style={styles.animBox} pointerEvents="none">
-                <Animated.View
-                  style={[
-                    styles.ripple,
-                    {
-                      transform: [{ scale: rippleScale1 }],
-                      opacity: rippleOpacity1,
-                    },
-                  ]}
-                />
-                <Animated.View
-                  style={[
-                    styles.ripple,
-                    {
-                      transform: [{ scale: rippleScale2 }],
-                      opacity: rippleOpacity2,
-                    },
-                  ]}
-                />
-                <Animated.View
-                  style={[
-                    styles.checkCircle,
-                    { transform: [{ scale: checkPop }] },
-                  ]}
-                >
-                  <Ionicons
-                    name="checkmark"
-                    size={34}
-                    color={colors.raw.white}
-                  />
-                </Animated.View>
-              </View>
-            ) : (
-              // Form: icono de candado
-              <View style={styles.logoCircle}>
-                <Ionicons
-                  name="lock-closed-outline"
-                  size={28}
-                  color={colors.brand.navy}
-                />
-              </View>
-            )}
-
-            <Text style={styles.title}>
-              {showInvalid
-                ? 'Enlace inválido'
-                : success
-                ? '¡Contraseña actualizada!'
-                : 'Nueva contraseña'}
-            </Text>
-
-            <Text style={styles.subtitle}>
-              {showInvalid
-                ? error ||
-                  'El enlace para restablecer tu contraseña no es válido o expiró.'
-                : success
-                ? 'Te llevaremos a iniciar sesión en unos segundos…'
-                : 'Elige una contraseña segura para tu cuenta.'}
-            </Text>
-          </View>
-
-          {/* ======= Body ======= */}
-          {showInvalid ? null : success ? (
-            <Button
-              title="Ir a iniciar sesión ahora"
-              onPress={() => router.replace('/(auth)/sign-in')}
-              style={styles.primaryCta}
-              accessibilityHint="Ir inmediatamente a la pantalla de inicio de sesión"
-            />
-          ) : (
-            <View style={styles.form}>
-              <Input
-                ref={passRef}
-                placeholder="Ingresa tu nueva contraseña (mín. 8)"
-                value={credentials.password}
-                onChangeText={(t) => setField('password', t)}
-                secureTextEntry
-                secureToggle
-                textContentType={
-                  Platform.OS === 'ios' ? 'newPassword' : 'password'
-                }
-                autoComplete={
-                  Platform.OS === 'ios' ? 'password-new' : 'password-new'
-                }
-                {...(Platform.OS === 'ios'
-                  ? {
-                      // iOS: sugerencias y evita overlay agresivo
-                      passwordRules:
-                        'minlength: 8; required: lower; required: upper; required: digit; allowed: ascii;',
-                    }
-                  : {})}
-                returnKeyType="next"
-                onSubmitEditing={() => confirmRef.current?.focus()}
-                error={errors.password}
-                containerStyle={{ marginBottom: spacing.formGap }}
-                editable={!loading}
-              />
-
-              <Input
-                ref={confirmRef}
-                placeholder="Confirma tu nueva contraseña"
-                value={credentials.confirmPassword}
-                onChangeText={(t) => setField('confirmPassword', t)}
-                secureTextEntry
-                secureToggle
-                textContentType={
-                  Platform.OS === 'ios' ? ('oneTimeCode' as any) : 'password'
-                }
-                autoComplete="off"
-                returnKeyType="go"
-                onSubmitEditing={handleSubmit}
-                error={errors.confirmPassword}
-                containerStyle={{ marginBottom: spacing.xs }}
-                editable={!loading}
-              />
-
-              {/* Error global (match Login) */}
-              {error ? (
-                <View style={styles.errorContainer}>
-                  <Ionicons
-                    name="warning-outline"
-                    size={16}
-                    color={colors.error.fg}
-                  />
-                  <Text style={styles.errorText}>{error}</Text>
-                </View>
-              ) : null}
-
-              <Button
-                title="Actualizar contraseña"
-                onPress={handleSubmit}
-                loading={loading}
-                disabled={loading}
-                style={styles.primaryCta}
-                accessibilityHint="Guardar nueva contraseña"
-              />
-
-              <Text style={styles.hint}>
-                Usa al menos 8 caracteres. Combina letras, números y símbolos.
-              </Text>
-            </View>
-          )}
+        <View className="flex-1 justify-center px-6 py-8">
+          <View className="mb-6 items-center">{renderHeader()}</View>
+          {renderForm()}
         </View>
       </ScrollView>
     </KeyboardAvoidingView>
@@ -400,96 +482,16 @@ export function ResetPasswordForm() {
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.surface },
-
-  content: {
-    flexGrow: 1,
-    paddingHorizontal: spacing.gutter,
-    paddingVertical: spacing.xl,
-  },
-  main: {
-    flexGrow: 1,
-    justifyContent: 'center',
-  },
-
-  // Header (idéntico al Login)
-  header: {
-    alignItems: 'center',
-    marginBottom: spacing.l,
-  },
-  logoCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 20,
-    backgroundColor: colors.brand.navyBg,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.m,
-  },
-
-  title: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: colors.textPrimary,
-    marginBottom: spacing.xs,
-    textAlign: 'center',
-  },
-  subtitle: {
-    fontSize: 15,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-
-  form: {
-    marginTop: spacing.xs,
-  },
-
-  // Error global (match Login)
-  errorContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: colors.error.bg,
-    paddingHorizontal: spacing.m,
-    paddingVertical: spacing.s,
-    borderRadius: 8,
-    marginBottom: spacing.m,
-    gap: spacing.xs,
-  },
-  errorText: { flex: 1, color: colors.error.fg, fontSize: 14 },
-
-  primaryCta: {
-    marginTop: spacing.m,
-    marginBottom: spacing.m,
-    backgroundColor: colors.brand.navy,
-    borderColor: colors.brand.navy,
-  },
-  hint: {
-    textAlign: 'center',
-    color: colors.textHint,
-    fontSize: 12,
-  },
-
-  // Éxito – anim (match EmailVerified)
-  animBox: {
-    width: CIRCLE * 2.2,
-    height: CIRCLE * 2.2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.m,
-  },
   ripple: {
     position: 'absolute',
-    width: CIRCLE,
-    height: CIRCLE,
-    borderRadius: CIRCLE / 2,
-    backgroundColor: colors.brand.navy,
+    width: CIRCLE_SIZE,
+    height: CIRCLE_SIZE,
+    borderRadius: CIRCLE_SIZE / 2,
   },
   checkCircle: {
-    width: CIRCLE,
-    height: CIRCLE,
-    borderRadius: CIRCLE / 2,
-    backgroundColor: colors.brand.navy,
+    width: CIRCLE_SIZE,
+    height: CIRCLE_SIZE,
+    borderRadius: CIRCLE_SIZE / 2,
     alignItems: 'center',
     justifyContent: 'center',
     elevation: 2,

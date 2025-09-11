@@ -1,68 +1,20 @@
-import React from 'react';
-import { View, Text, StyleSheet } from 'react-native';
-import { useAuth, useUser } from '@/hooks';
-import { Button } from '@/components/ui/Button';
+import { View, Text } from 'react-native';
 
 export default function TransactionsScreen() {
-  const { signOut } = useAuth();
-  const user = useUser();
-
   return (
-    <View style={styles.container}>
-      <Text style={styles.title}>¡Bienvenido a FINYVO!</Text>
-      <Text style={styles.subtitle}>Hola {user?.fullName || 'Usuario'} 👋</Text>
+    <View className="flex-1 bg-white px-6 py-6">
+      <Text className="text-xl font-extrabold text-gray-900">
+        Transacciones
+      </Text>
 
-      <View style={styles.content}>
-        <Text style={styles.description}>
-          Tu pantalla de transacciones estará aquí. Por ahora, puedes probar
-          cerrar sesión.
+      <View className="mt-4 rounded-2xl bg-gray-50 p-4 shadow-card">
+        <Text className="text-gray-800 font-semibold">
+          Tarjeta con NativeWind
         </Text>
-
-        <Button
-          title="Cerrar Sesión"
-          onPress={signOut}
-          variant="outline"
-          style={styles.signOutButton}
-        />
+        <Text className="text-gray-500 mt-1">
+          Sombra sutil y radios grandes.
+        </Text>
       </View>
     </View>
   );
 }
-
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#FFFFFF',
-    paddingHorizontal: 20,
-    paddingTop: 60,
-  },
-  title: {
-    fontSize: 32,
-    fontWeight: 'bold',
-    color: '#1C1C1E',
-    textAlign: 'center',
-    marginBottom: 8,
-  },
-  subtitle: {
-    fontSize: 18,
-    color: '#8E8E93',
-    textAlign: 'center',
-    marginBottom: 40,
-  },
-  content: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  description: {
-    fontSize: 16,
-    color: '#8E8E93',
-    textAlign: 'center',
-    lineHeight: 24,
-    marginBottom: 32,
-    paddingHorizontal: 20,
-  },
-  signOutButton: {
-    minWidth: 200,
-  },
-});
