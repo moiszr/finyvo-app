@@ -1,5 +1,5 @@
 // src/features/auth/components/SignUpForm.tsx
-import React, { useRef, useState, useCallback, useMemo } from 'react';
+import React, { useRef, useState, useCallback } from 'react';
 import {
   View,
   Text,

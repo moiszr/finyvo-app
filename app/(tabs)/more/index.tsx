@@ -1,10 +1,11 @@
+// app/(tabs)/more/index.tsx
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 
-export default function SettingsScreen() {
+export default function MoreScreen() {
   return (
     <View style={styles.container}>
-      <Text style={styles.title}>Configuración</Text>
+      <Text style={styles.title}>Más</Text>
       <Text style={styles.subtitle}>Próximamente...</Text>
     </View>
   );
