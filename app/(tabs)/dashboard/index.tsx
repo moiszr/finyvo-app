@@ -1,13 +1,21 @@
+// app/(tabs)/dashboard/index.tsx
 import React from 'react';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAuth } from '@/hooks/useAuth';
 import { Button } from '@/components/ui/Button';
 
 export default function DashboardScreen() {
   const { user, signOut } = useAuth();
+  const { bottom } = useSafeAreaInsets();
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView
+      style={styles.container}
+      // Añadimos espacio en la parte inferior para que el último elemento
+      // no quede oculto detrás de la barra de pestañas flotante.
+      contentContainerStyle={{ paddingBottom: bottom + 100 }} // 100 es un buen valor (65 de la barra + 30 de margen + extra)
+    >
       <View style={styles.content}>
         <Text style={styles.title}>Bienvenido a FINYVO</Text>
         <Text style={styles.subtitle}>Hola {user?.email || 'Usuario'}</Text>
@@ -37,7 +45,7 @@ export default function DashboardScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: '#F5F7FA',
   },
   content: {
     flex: 1,

@@ -4,7 +4,6 @@ import {
   View,
   Text,
   KeyboardAvoidingView,
-  Platform,
   ScrollView,
   TextInput,
   StyleSheet,
