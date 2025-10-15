@@ -1,8 +1,15 @@
+// babel.config.js
 module.exports = function (api) {
   api.cache(true);
   return {
-    presets: ['babel-preset-expo'],
+    presets: [
+      // Expo + JSX a través de NativeWind
+      ['babel-preset-expo', { jsxImportSource: 'nativewind' }],
+      // 👇 NativeWind es un PRESET (no plugin)
+      'nativewind/babel',
+    ],
     plugins: [
+      // Alias @ → ./src
       [
         'module-resolver',
         {
@@ -11,6 +18,8 @@ module.exports = function (api) {
           extensions: ['.ts', '.tsx', '.js', '.jsx', '.json'],
         },
       ],
+      // Reanimated SIEMPRE de último
+      'react-native-reanimated/plugin',
     ],
   };
 };

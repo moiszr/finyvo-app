@@ -6,9 +6,11 @@ import {
   StyleSheet,
   StyleProp,
   ViewStyle,
+  Platform,
 } from 'react-native';
 import { FontAwesome } from '@expo/vector-icons';
 import Svg, { Path } from 'react-native-svg';
+import { colors } from '@/design';
 
 export type SocialProvider = 'apple' | 'google' | 'facebook';
 
@@ -18,6 +20,7 @@ export interface SocialButtonProps {
   disabled?: boolean;
   loading?: boolean;
   style?: StyleProp<ViewStyle>;
+  testID?: string;
 }
 
 /** Logo oficial de Google (multicolor) */
@@ -44,18 +47,22 @@ function GoogleGlyph({ size = 22 }: { size?: number }) {
   );
 }
 
-/** Botón de Social Login */
 export function SocialButton({
   provider,
   onPress,
-  disabled,
-  loading,
+  disabled = false,
+  loading = false,
   style,
+  testID,
 }: SocialButtonProps) {
+  const isDisabled = disabled || loading;
+
+  // Iconos con tamaño fijo; el contenedor NO cambia.
+  const ICON_SIZE = 22;
   const icons = {
-    apple: <FontAwesome name="apple" size={24} color="#000000" />,
-    google: <GoogleGlyph size={22} />,
-    facebook: <FontAwesome name="facebook" size={22} color="#1877F2" />,
+    apple: <FontAwesome name="apple" size={ICON_SIZE} color="#000000" />,
+    google: <GoogleGlyph size={ICON_SIZE} />,
+    facebook: <FontAwesome name="facebook" size={ICON_SIZE} color="#1877F2" />,
   } as const;
 
   const labels = {
@@ -64,21 +71,34 @@ export function SocialButton({
     facebook: 'Continuar con Facebook',
   } as const;
 
+  const ripple =
+    Platform.OS === 'android'
+      ? { color: 'rgba(0,0,0,0.06)', radius: 27 } // 54/2
+      : undefined;
+
   return (
     <Pressable
       onPress={onPress}
-      disabled={disabled}
+      disabled={isDisabled}
+      android_ripple={ripple}
+      accessibilityRole="button"
+      accessibilityLabel={labels[provider]}
+      accessibilityState={{ disabled: isDisabled, busy: loading }}
+      hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+      testID={testID}
+      // Base visual con tokens
+      className="h-[54px] w-[54px] items-center justify-center rounded-[16px] border border-border bg-surface"
+      // Sombra/pressed/disabled + backups por si tokens fallan
       style={({ pressed }) => [
-        styles.socialBtn,
+        styles.backupBase, // asegura borde+bg si falta el token
+        styles.shadow, // sombra sutil, moderna
         pressed && styles.pressed,
-        disabled && styles.disabled,
+        isDisabled && styles.disabled,
         style,
       ]}
-      accessibilityLabel={labels[provider]}
-      accessibilityState={{ disabled }}
     >
       {loading ? (
-        <ActivityIndicator size="small" color="#6B7280" />
+        <ActivityIndicator size="small" color={colors.textMuted} />
       ) : (
         icons[provider]
       )}
@@ -87,28 +107,30 @@ export function SocialButton({
 }
 
 const styles = StyleSheet.create({
-  socialBtn: {
-    width: 54,
-    height: 54,
-    borderRadius: 16,
+  // Backups idénticos a tu look: borde + blanco
+  backupBase: {
     borderWidth: 1,
-    borderColor: '#E5E7EB',
-    alignItems: 'center',
-    justifyContent: 'center',
-    backgroundColor: '#FFFFFF',
+    borderColor: '#E5E7EB', // = tokens.colors.border
+    backgroundColor: '#FFFFFF', // = tokens.colors.surface
+    borderRadius: 16,
+  },
+  // Sombra muy sutil (iOS) + elevación (Android)
+  shadow: {
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
     shadowRadius: 2,
     elevation: 2,
   },
+  // Feedback táctil
   pressed: {
-    opacity: 0.7,
+    opacity: 0.85,
     transform: [{ scale: 0.98 }],
   },
+  // Estado disabled
   disabled: {
     opacity: 0.5,
-    backgroundColor: '#F9FAFB',
+    backgroundColor: colors.surfaceMuted ?? '#F6F7FB',
   },
 });
 

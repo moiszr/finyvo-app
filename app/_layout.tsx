@@ -165,6 +165,9 @@ export default function RootLayout() {
     const inEmailVerified = segments.includes('email-verified');
     const inOnboarding = segments.includes('onboarding');
 
+    // 👇 Excepciones dentro de (auth) donde NO queremos que te saquen:
+    const authException = inVerifyEmail || inEmailVerified || inOnboarding;
+
     // Recovery → forzar /reset-password
     if (isRecoverySession && !inReset) {
       safeReplace(PATHS.RESET_PASSWORD, { force: true });
@@ -175,16 +178,13 @@ export default function RootLayout() {
 
     // Con sesión
     if (session) {
-      // Si aún no completó onboarding → forzar onboarding
-      if (!isOnboarded && !inOnboarding) {
+      // ⛳️ Si NO ha completado onboarding, SOLO redirige si NO estás en una excepción
+      if (!isOnboarded && !authException) {
         safeReplace(PATHS.ONBOARDING, { force: true });
         return;
       }
 
-      // Excepciones dentro de (auth) que sí permitimos con sesión:
-      const authException = inVerifyEmail || inEmailVerified || inOnboarding;
-
-      // Con sesión y dentro de (auth) (salvo excepciones) → dashboard
+      // Con sesión y dentro de (auth), sal a dashboard salvo en excepciones
       if (inAuthGroup && !authException) {
         safeReplace(PATHS.DASHBOARD);
       }

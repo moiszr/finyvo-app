@@ -5,79 +5,191 @@ import { supabase } from '@/api/supabase/supabaseClient';
 import { useAuthStore } from '@/store/authStore';
 import type { ResetPasswordCredentials } from '../types';
 
-type ResetOptions = {
-  /** Navegar automáticamente a Sign In al terminar */
-  autoNavigate?: boolean;
-  /** Cerrar sesión inmediatamente tras actualizar la contraseña */
-  signOutAfter?: boolean;
-};
+// Tipos
+export enum ResetPasswordErrorCode {
+  INVALID_TOKEN = 'INVALID_TOKEN',
+  EXPIRED_TOKEN = 'EXPIRED_TOKEN',
+  WEAK_PASSWORD = 'WEAK_PASSWORD',
+  PASSWORD_MISMATCH = 'PASSWORD_MISMATCH',
+  NETWORK_ERROR = 'NETWORK_ERROR',
+  SESSION_ERROR = 'SESSION_ERROR',
+  GENERIC = 'GENERIC',
+}
 
-// Compat: exponemos tanto ok como success para no romper código previo
-type ResetResult =
-  | { ok: true; success: true }
-  | { ok: false; success: false; message?: string };
+export interface ResetOptions {
+  autoNavigate?: boolean;
+  signOutAfter?: boolean;
+}
+
+export interface ResetResult {
+  ok: boolean;
+  success: boolean;
+  errorCode?: ResetPasswordErrorCode;
+  message?: string;
+}
+
+interface ErrorMapping {
+  code: ResetPasswordErrorCode;
+  message: string;
+  patterns: RegExp[];
+}
+
+// Configuración de mapeo de errores
+const ERROR_MAPPINGS: ErrorMapping[] = [
+  {
+    code: ResetPasswordErrorCode.INVALID_TOKEN,
+    message: 'El enlace no es válido. Por favor, solicita uno nuevo.',
+    patterns: [
+      /invalid.*token/i,
+      /token.*invalid/i,
+      /malformed.*token/i,
+      /bad.*token/i,
+    ],
+  },
+  {
+    code: ResetPasswordErrorCode.EXPIRED_TOKEN,
+    message: 'El enlace ha expirado. Por favor, solicita uno nuevo.',
+    patterns: [
+      /expired.*token/i,
+      /token.*expired/i,
+      /enlace.*expirado/i,
+      /timeout/i,
+    ],
+  },
+  {
+    code: ResetPasswordErrorCode.WEAK_PASSWORD,
+    message: 'La contraseña no cumple con los requisitos de seguridad.',
+    patterns: [
+      /weak.*password/i,
+      /password.*weak/i,
+      /password.*requirements/i,
+      /insecure.*password/i,
+    ],
+  },
+  {
+    code: ResetPasswordErrorCode.NETWORK_ERROR,
+    message: 'Error de conexión. Verifica tu internet e intenta de nuevo.',
+    patterns: [
+      /network.*error/i,
+      /connection.*failed/i,
+      /fetch.*failed/i,
+      /offline/i,
+    ],
+  },
+  {
+    code: ResetPasswordErrorCode.SESSION_ERROR,
+    message: 'Error de sesión. Por favor, intenta de nuevo.',
+    patterns: [
+      /session.*error/i,
+      /no.*session/i,
+      /unauthorized/i,
+      /not.*authenticated/i,
+    ],
+  },
+];
+
+function mapResetPasswordError(error: any): {
+  code: ResetPasswordErrorCode;
+  message: string;
+} {
+  const errorMessage = String(
+    error?.message ||
+      error?.error?.message ||
+      error?.data?.message ||
+      error?.code ||
+      error ||
+      '',
+  ).toLowerCase();
+
+  for (const mapping of ERROR_MAPPINGS) {
+    for (const pattern of mapping.patterns) {
+      if (pattern.test(errorMessage)) {
+        return { code: mapping.code, message: mapping.message };
+      }
+    }
+  }
+
+  return {
+    code: ResetPasswordErrorCode.GENERIC,
+    message:
+      'No se pudo actualizar la contraseña. Por favor, intenta de nuevo.',
+  };
+}
 
 export function useResetPassword() {
-  const [loading, setLoading] = useState(false);
-  const [booting, setBooting] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [tokensProcessed, setTokensProcessed] = useState(false);
-
   const router = useRouter();
   const { token_hash, type } = useLocalSearchParams<{
     token_hash?: string;
     type?: string;
   }>();
 
-  const {
-    isRecoverySession,
-    clearRecoveryAndSignOut, // limpia flags del store + signOut local
-  } = useAuthStore();
+  const { isRecoverySession, clearRecoveryAndSignOut } = useAuthStore();
 
-  /**
-   * Boot: validar si ya hay sesión de recuperación o si llega token_hash en URL.
-   * Mantiene la semántica de tokensProcessed/booting/error.
-   */
+  // Estado principal
+  const [loading, setLoading] = useState(false);
+  const [booting, setBooting] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [errorCode, setErrorCode] = useState<ResetPasswordErrorCode | null>(
+    null,
+  );
+  const [tokensProcessed, setTokensProcessed] = useState(false);
+
+  // Verificación inicial del token/sesión de recuperación
   useEffect(() => {
     let cancelled = false;
 
     (async () => {
       try {
-        const { data, error: sErr } = await supabase.auth.getSession();
-        if (sErr) throw sErr;
+        const { data: sessionData, error: sessionError } =
+          await supabase.auth.getSession();
+        if (sessionError) throw sessionError;
 
-        // A) Ya hay sesión y estamos en modo recovery → OK, no re-verificar OTP
-        if (data.session && isRecoverySession) {
+        // A) Ya hay sesión de recuperación activa
+        if (sessionData.session && isRecoverySession) {
           if (!cancelled) {
             setTokensProcessed(true);
             setError(null);
+            setErrorCode(null);
           }
           return;
         }
 
-        // B) No hay sesión pero viene token de recovery → verificar OTP
-        if (!data.session && token_hash && type === 'recovery') {
-          const { data: vData, error: vErr } = await supabase.auth.verifyOtp({
-            type: 'recovery',
-            token_hash,
-          });
-          if (vErr) {
-            if (!cancelled)
-              setError('Enlace inválido o expirado. Solicita uno nuevo.');
+        // B) No hay sesión pero viene token de recovery: verificar OTP
+        if (!sessionData.session && token_hash && type === 'recovery') {
+          const { data: verifyData, error: verifyError } =
+            await supabase.auth.verifyOtp({
+              type: 'recovery',
+              token_hash,
+            });
+
+          if (verifyError) {
+            const mapped = mapResetPasswordError(verifyError);
+            if (!cancelled) {
+              setError(mapped.message);
+              setErrorCode(mapped.code);
+            }
             return;
           }
-          if (vData.session && !cancelled) {
+
+          if (verifyData.session && !cancelled) {
             setTokensProcessed(true);
             setError(null);
+            setErrorCode(null);
           }
           return;
         }
 
-        // C) Ni sesión ni token válido → error
-        if (!cancelled)
+        // C) Ni sesión ni token válido
+        if (!cancelled) {
           setError('Enlace inválido o expirado. Solicita uno nuevo.');
-      } catch (e: any) {
-        if (!cancelled) setError(e?.message ?? 'Error verificando sesión');
+          setErrorCode(ResetPasswordErrorCode.INVALID_TOKEN);
+        }
+      } catch (err) {
+        const mapped = mapResetPasswordError(err);
+        if (!cancelled) {
+          setError(mapped.message);
+          setErrorCode(mapped.code);
+        }
       } finally {
         if (!cancelled) setBooting(false);
       }
@@ -88,47 +200,119 @@ export function useResetPassword() {
     };
   }, [isRecoverySession, token_hash, type]);
 
-  /**
-   * Actualiza la contraseña. Por defecto NO navega ni cierra sesión, para que el formulario
-   * pueda mostrar la animación y controlar el timing del redirect.
-   * Puedes cambiarlo con `opts` (autoNavigate / signOutAfter).
-   */
   const resetPassword = useCallback(
     async (
-      { password, confirmPassword }: ResetPasswordCredentials,
-      opts: ResetOptions = { autoNavigate: false, signOutAfter: false },
+      credentials: ResetPasswordCredentials,
+      options: ResetOptions = { autoNavigate: false, signOutAfter: false },
     ): Promise<ResetResult> => {
       setLoading(true);
       setError(null);
+      setErrorCode(null);
 
       try {
-        // Validaciones mínimas
-        if (!password || !confirmPassword)
-          throw new Error('Completa ambos campos');
-        if (password !== confirmPassword)
-          throw new Error('Las contraseñas no coinciden');
-        if (password.length < 8)
-          throw new Error('La contraseña debe tener al menos 8 caracteres');
+        const { password, confirmPassword } = credentials;
 
-        // Actualizar en Supabase
-        const { error: updErr } = await supabase.auth.updateUser({ password });
-        if (updErr) throw updErr;
-
-        // Opcional: cerrar sesión inmediatamente para evitar que el guard te lleve al dashboard
-        if (opts.signOutAfter) {
-          await clearRecoveryAndSignOut();
+        // ✅ Validaciones locales (sin throw)
+        if (!password || !confirmPassword) {
+          setError('Completa ambos campos');
+          setErrorCode(ResetPasswordErrorCode.GENERIC);
+          return {
+            ok: false,
+            success: false,
+            message: 'Completa ambos campos',
+            errorCode: ResetPasswordErrorCode.GENERIC,
+          };
         }
 
-        // Opcional: navegar ya mismo a Sign In (el form usualmente lo controla)
-        if (opts.autoNavigate) {
+        if (password !== confirmPassword) {
+          setError('Las contraseñas no coinciden');
+          setErrorCode(ResetPasswordErrorCode.PASSWORD_MISMATCH);
+          return {
+            ok: false,
+            success: false,
+            message: 'Las contraseñas no coinciden',
+            errorCode: ResetPasswordErrorCode.PASSWORD_MISMATCH,
+          };
+        }
+
+        if (password.length < 8) {
+          setError('La contraseña debe tener al menos 8 caracteres');
+          setErrorCode(ResetPasswordErrorCode.WEAK_PASSWORD);
+          return {
+            ok: false,
+            success: false,
+            message: 'La contraseña debe tener al menos 8 caracteres',
+            errorCode: ResetPasswordErrorCode.WEAK_PASSWORD,
+          };
+        }
+
+        // Reglas extra (opcional)
+        const hasLowerCase = /[a-z]/.test(password);
+        const hasUpperCase = /[A-Z]/.test(password);
+        const hasNumber = /\d/.test(password);
+        if (!hasLowerCase || !hasUpperCase || !hasNumber) {
+          setError(
+            'La contraseña debe incluir mayúsculas, minúsculas y números',
+          );
+          setErrorCode(ResetPasswordErrorCode.WEAK_PASSWORD);
+          return {
+            ok: false,
+            success: false,
+            message:
+              'La contraseña debe incluir mayúsculas, minúsculas y números',
+            errorCode: ResetPasswordErrorCode.WEAK_PASSWORD,
+          };
+        }
+
+        // ⚠️ Protección: si no hay sesión de recuperación válida, evitar updateUser
+        const { data: sessionData } = await supabase.auth.getSession();
+        if (!sessionData?.session) {
+          setError('Error de sesión. Por favor, intenta de nuevo.');
+          setErrorCode(ResetPasswordErrorCode.SESSION_ERROR);
+          return {
+            ok: false,
+            success: false,
+            message: 'Error de sesión. Por favor, intenta de nuevo.',
+            errorCode: ResetPasswordErrorCode.SESSION_ERROR,
+          };
+        }
+
+        // Actualizar contraseña
+        const { error: updateError } = await supabase.auth.updateUser({
+          password,
+        });
+        if (updateError) {
+          const mapped = mapResetPasswordError(updateError);
+          setError(mapped.message);
+          setErrorCode(mapped.code);
+          return {
+            ok: false,
+            success: false,
+            message: mapped.message,
+            errorCode: mapped.code,
+          };
+        }
+
+        // Opcionales
+        if (options.signOutAfter) {
+          await clearRecoveryAndSignOut();
+        }
+        if (options.autoNavigate) {
           router.replace('/(auth)/sign-in');
         }
 
         return { ok: true, success: true };
-      } catch (e: any) {
-        const message = e?.message ?? 'Error actualizando contraseña';
-        setError(message);
-        return { ok: false, success: false, message };
+      } catch (err: any) {
+        // Solo errores inesperados aquí
+        const mapped = mapResetPasswordError(err);
+        setError(mapped.message);
+        setErrorCode(mapped.code);
+        return {
+          ok: false,
+          success: false,
+          message: mapped.message,
+          errorCode: mapped.code,
+        };
       } finally {
         setLoading(false);
       }
@@ -140,20 +324,35 @@ export function useResetPassword() {
     router.replace('/(auth)/forgot-password');
   }, [router]);
 
+  const clearError = useCallback(() => {
+    setError(null);
+    setErrorCode(null);
+  }, []);
+
+  const isErrorType = useCallback(
+    (type: ResetPasswordErrorCode): boolean => errorCode === type,
+    [errorCode],
+  );
+
   return {
-    // acciones
+    // Acciones
     resetPassword,
     redirectToForgotPassword,
-    clearError: () => setError(null),
+    clearError,
+    signOutForReset: clearRecoveryAndSignOut,
 
-    // estados
+    // Estado
     loading,
     booting,
     error,
+    errorCode,
     tokensProcessed,
     isRecoverySession,
 
-    // utilidad: para que el form cierre sesión justo antes de redirigir
-    signOutForReset: clearRecoveryAndSignOut,
+    // Helpers
+    isErrorType,
+    isInvalidToken: errorCode === ResetPasswordErrorCode.INVALID_TOKEN,
+    isExpiredToken: errorCode === ResetPasswordErrorCode.EXPIRED_TOKEN,
+    isWeakPassword: errorCode === ResetPasswordErrorCode.WEAK_PASSWORD,
   };
 }

@@ -1,5 +1,5 @@
-// components/ui/Button.tsx
-import React, { useRef, useCallback } from 'react';
+// src/components/ui/Button.tsx
+import React, { useRef, useCallback, ReactNode, useMemo } from 'react';
 import {
   TouchableOpacity,
   TouchableOpacityProps,
@@ -9,40 +9,79 @@ import {
   ViewStyle,
   TextStyle,
   StyleProp,
+  View,
+  Platform,
 } from 'react-native';
+import { colors } from '@/design';
+
+type ButtonVariant = 'primary' | 'secondary' | 'outline' | 'ghost';
+type ButtonSize = 'sm' | 'md' | 'lg';
 
 interface Props extends Omit<TouchableOpacityProps, 'onPress' | 'style'> {
   title: string;
   onPress?: () => void;
-  variant?: 'primary' | 'secondary' | 'outline';
-  size?: 'small' | 'medium' | 'large';
+
+  variant?: ButtonVariant;
+  size?: ButtonSize;
+
   loading?: boolean;
   disabled?: boolean;
-  style?: StyleProp<ViewStyle>; // 👈 StyleProp
-  textStyle?: StyleProp<TextStyle>; // 👈 StyleProp
-  /** Evita taps dobles dentro de una ventana de tiempo */
+
+  /** estilo externo y del texto (admite arrays / StyleProp) */
+  style?: StyleProp<ViewStyle>;
+  textStyle?: StyleProp<TextStyle>;
+
+  /** íconos opcionales */
+  leftIcon?: ReactNode;
+  rightIcon?: ReactNode;
+
+  /** que ocupe todo el ancho */
+  fullWidth?: boolean;
+
+  /** evita taps dobles dentro de una ventana */
   once?: boolean;
-  debounceMs?: number; // por defecto 700ms
+  debounceMs?: number;
+
+  testID?: string;
 }
 
-const NAVY = '#0B2447';
-const NAVY_40 = '#DDE3EE';
+/** tokens por tamaño (alineado con el Input) */
+function sizeTokens(size: ButtonSize) {
+  switch (size) {
+    case 'sm':
+      return { minH: 40, px: 16, textSize: 15, radius: 999 };
+    case 'lg':
+      return { minH: 56, px: 24, textSize: 17, radius: 999 };
+    case 'md':
+    default:
+      return { minH: 52, px: 20, textSize: 16, radius: 999 };
+  }
+}
 
 export function Button({
   title,
   onPress,
   variant = 'primary',
-  size = 'medium',
+  size = 'md',
   loading = false,
   disabled = false,
   style,
   textStyle,
+  leftIcon,
+  rightIcon,
+  fullWidth = false,
   once = false,
   debounceMs = 700,
+  testID,
   ...touchableProps
 }: Props) {
   const isDisabled = disabled || loading;
   const lastPressRef = useRef(0);
+
+  const { minH, px, textSize, radius } = useMemo(
+    () => sizeTokens(size),
+    [size],
+  );
 
   const handlePress = useCallback(() => {
     if (!onPress || isDisabled) return;
@@ -51,55 +90,111 @@ export function Button({
       if (now - lastPressRef.current < debounceMs) return;
       lastPressRef.current = now;
     }
-    // Ejecuta en el próximo frame para una sensación más fluida
     requestAnimationFrame(onPress);
   }, [onPress, isDisabled, once, debounceMs]);
+
+  /** colores por variante (usamos clases para layout/color + sombras con StyleSheet) */
+  const containerClasses = useMemo(() => {
+    switch (variant) {
+      case 'secondary':
+        return 'bg-surfaceMuted border-surfaceMuted';
+      case 'outline':
+        return 'bg-transparent border-brand-navy/30';
+      case 'ghost':
+        return 'bg-transparent border-transparent';
+      case 'primary':
+      default:
+        return 'bg-brand-navy border-brand-navy';
+    }
+  }, [variant]);
+
+  const textClasses = useMemo(() => {
+    switch (variant) {
+      case 'secondary':
+      case 'outline':
+      case 'ghost':
+        return 'text-brand-navy';
+      case 'primary':
+      default:
+        return 'text-surface';
+    }
+  }, [variant]);
+
+  const spinnerColor =
+    variant === 'primary' ? colors.raw.white : colors.brand.navy;
+
+  /** sombra/elevación sutil para botones sólidos, elegante pero discreta */
+  const shadowStyle =
+    variant === 'primary' || variant === 'secondary'
+      ? styles.elevated
+      : undefined;
 
   return (
     <TouchableOpacity
       {...touchableProps}
-      onPress={handlePress}
       activeOpacity={0.85}
       disabled={isDisabled}
+      onPress={handlePress}
       hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+      accessibilityRole="button"
+      accessibilityState={{ disabled: isDisabled }}
+      testID={testID}
+      className={[
+        'flex-row items-center justify-center border',
+        containerClasses,
+        fullWidth ? 'w-full' : '',
+      ].join(' ')}
       style={[
-        styles.base,
-        styles[variant],
-        styles[`${size}Size`],
+        {
+          minHeight: minH,
+          paddingHorizontal: px,
+          borderRadius: radius,
+        },
+        shadowStyle,
         isDisabled && styles.disabled,
         style,
       ]}
     >
+      {/* left icon */}
+      {leftIcon ? <View style={styles.iconLeft}>{leftIcon}</View> : null}
+
+      {/* content */}
       {loading ? (
-        <ActivityIndicator
-          color={variant === 'primary' ? '#FFFFFF' : NAVY}
-          size="small"
-        />
+        <ActivityIndicator size="small" color={spinnerColor} />
       ) : (
-        <Text style={[styles.baseText, styles[`${variant}Text`], textStyle]}>
+        <Text
+          className={['font-bold', textClasses].join(' ')}
+          style={[{ fontSize: textSize }, textStyle]}
+          numberOfLines={1}
+        >
           {title}
         </Text>
       )}
+
+      {/* right icon (se oculta si loading para mantener balance visual) */}
+      {!loading && rightIcon ? (
+        <View style={styles.iconRight}>{rightIcon}</View>
+      ) : null}
     </TouchableOpacity>
   );
 }
 
 const styles = StyleSheet.create({
-  base: {
-    borderRadius: 999,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
+  iconLeft: {
+    marginRight: 10,
   },
-  primary: { backgroundColor: NAVY, borderColor: NAVY },
-  secondary: { backgroundColor: '#F3F4F6', borderColor: '#F3F4F6' },
-  outline: { backgroundColor: 'transparent', borderColor: NAVY_40 },
-  smallSize: { paddingHorizontal: 16, minHeight: 40 },
-  mediumSize: { paddingHorizontal: 20, minHeight: 52 },
-  largeSize: { paddingHorizontal: 24, minHeight: 56 },
-  baseText: { fontWeight: '700', fontSize: 16 },
-  primaryText: { color: '#FFFFFF' },
-  secondaryText: { color: NAVY },
-  outlineText: { color: NAVY },
-  disabled: { opacity: 0.55 },
+  iconRight: {
+    marginLeft: 10,
+  },
+  disabled: {
+    opacity: 0.55,
+  },
+  elevated: {
+    // sombra sutil y limpia
+    shadowColor: '#000',
+    shadowOpacity: 0.05,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    ...(Platform.OS === 'android' ? { elevation: 2 } : null),
+  },
 });
