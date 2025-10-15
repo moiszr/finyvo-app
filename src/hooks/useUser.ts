@@ -1,4 +1,4 @@
-import { useAuthStore } from '@/store/authStore';
+import { useAuthStore } from '@/store/index';
 
 /**
  * Hook específico para obtener información del usuario

@@ -1,12 +1,13 @@
-// features/auth/components/VerifyEmailForm.tsx
-import React, { useEffect, useState, useCallback, useMemo } from 'react';
+// src/features/auth/components/VerifyEmailForm.tsx
+import React, { useEffect, useState, useCallback } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   KeyboardAvoidingView,
   Platform,
+  ScrollView,
   Pressable,
+  Keyboard,
 } from 'react-native';
 import { Button, Input } from '@/components/ui';
 import {
@@ -15,11 +16,18 @@ import {
   Stack,
   useNavigation,
 } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { supabase } from '@/api/supabase/supabaseClient';
 import { useVerifyEmail } from '../hooks/useVerifyEmail';
 import { Ionicons } from '@expo/vector-icons';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import { colors, spacing } from '@/themes/index';
+import { colors } from '@/design';
+
+// Constantes
+const EMAIL_VALIDATION = {
+  pattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+  errorEmpty: 'Ingresa tu email',
+  errorInvalid: 'Email inválido',
+} as const;
 
 export function VerifyEmailForm() {
   const params = useLocalSearchParams<{ email?: string }>();
@@ -27,86 +35,108 @@ export function VerifyEmailForm() {
   const navigation = useNavigation();
   const insets = useSafeAreaInsets();
 
-  const { email, setEmail, sending, sent, error, cooldown, resend, maskEmail } =
-    useVerifyEmail(params.email);
+  // Hook principal
+  const {
+    email,
+    setEmail,
+    sending,
+    sent,
+    error: globalError,
+    cooldown,
+    resend,
+    maskEmail,
+    clearError,
+    validateEmail,
+  } = useVerifyEmail(params.email);
 
-  const [checking, setChecking] = useState(false);
-  const [localMsg, setLocalMsg] = useState<string | null>(null);
-  const [editingEmail, setEditingEmail] = useState<boolean>(
+  // Estado local
+  const [isCheckingVerification, setIsCheckingVerification] = useState(false);
+  const [verificationMessage, setVerificationMessage] = useState<string | null>(
+    null,
+  );
+  const [isEditingEmail, setIsEditingEmail] = useState<boolean>(
     () => !params.email,
   );
+  const [fieldError, setFieldError] = useState<string | null>(null);
 
-  // -----------------------
-  // Helpers
-  // -----------------------
-  const normalizeEmail = useCallback(
-    (val: string) => val.trim().toLowerCase(),
-    [],
-  );
-  const emailIsValid = useMemo(
-    () => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email || ''),
-    [email],
-  );
-
-  const canResend = !!email && emailIsValid && !sending && cooldown <= 0;
-
-  const handleHeaderBack = useCallback(() => {
-    if (navigation?.canGoBack?.()) {
-      navigation.goBack();
-    } else {
-      router.replace('/(auth)/sign-in');
-    }
-  }, [navigation, router]);
-
-  // -----------------------
-  // Boot: si ya está verificado, pasa directo
-  // -----------------------
+  // Verificación inicial del estado de la cuenta
   useEffect(() => {
     let mounted = true;
-    (async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
 
-      if (!mounted) return;
+    const checkUserStatus = async () => {
+      try {
+        const {
+          data: { user },
+        } = await supabase.auth.getUser();
 
-      if (user?.email && !email) {
-        setEmail(user.email);
+        if (!mounted) return;
+
+        // Auto-rellenar email si está disponible
+        if (user?.email && !email) {
+          setEmail(user.email);
+        }
+
+        // Si ya está verificado, redirigir
+        if (user?.email_confirmed_at) {
+          setTimeout(() => router.replace('/(auth)/email-verified'), 0);
+        }
+      } catch (err) {
+        console.error('Error checking user status:', err);
       }
+    };
 
-      if (user?.email_confirmed_at) {
-        setTimeout(() => router.replace('/(auth)/email-verified'), 0);
-      }
-    })();
+    checkUserStatus();
 
     return () => {
       mounted = false;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [router, setEmail]);
+  }, [router, email, setEmail]);
 
-  // -----------------------
-  // Handlers
-  // -----------------------
-  const handleResend = useCallback(() => {
-    if (email) {
-      const normalized = normalizeEmail(email);
-      if (normalized !== email) setEmail(normalized);
+  // Helpers
+  const handleEmailChange = useCallback(
+    (text: string) => {
+      setEmail(text);
+
+      // Limpiar errores cuando el usuario escribe
+      if (fieldError) setFieldError(null);
+      if (globalError) clearError();
+      if (verificationMessage) setVerificationMessage(null);
+    },
+    [setEmail, fieldError, globalError, clearError, verificationMessage],
+  );
+
+  const handleResend = useCallback(async () => {
+    Keyboard.dismiss();
+
+    // Validar email antes de enviar
+    if (!email) {
+      setFieldError(EMAIL_VALIDATION.errorEmpty);
+      return;
     }
-    if (canResend) resend();
-  }, [email, canResend, resend, setEmail, normalizeEmail]);
 
-  const handleIAmVerified = useCallback(async () => {
-    setChecking(true);
-    setLocalMsg(null);
+    if (!validateEmail(email)) {
+      setFieldError(EMAIL_VALIDATION.errorInvalid);
+      return;
+    }
+
+    setFieldError(null);
+    await resend();
+  }, [email, validateEmail, resend]);
+
+  const handleCheckVerification = useCallback(async () => {
+    setIsCheckingVerification(true);
+    setVerificationMessage(null);
+
     try {
       const {
         data: { user },
-        error: uErr,
+        error: userError,
       } = await supabase.auth.getUser();
 
-      if (uErr) {
-        setLocalMsg('No pudimos comprobar tu estado. Intenta de nuevo.');
+      if (userError) {
+        setVerificationMessage(
+          'No pudimos comprobar tu estado. Intenta de nuevo.',
+        );
         return;
       }
 
@@ -115,27 +145,173 @@ export function VerifyEmailForm() {
         return;
       }
 
-      setLocalMsg(
-        'Aún no detectamos la verificación. Espera unos segundos y vuelve a intentarlo o reenvía el enlace.',
+      setVerificationMessage(
+        'Aún no detectamos la verificación. Revisa tu email o reenvía el enlace.',
       );
+    } catch (err) {
+      setVerificationMessage('Error al verificar. Intenta de nuevo.');
     } finally {
-      setChecking(false);
+      setIsCheckingVerification(false);
     }
   }, [router]);
 
   const handleUsePreviousEmail = useCallback(() => {
     if (params.email) {
       setEmail(params.email);
-      setEditingEmail(false);
+      setIsEditingEmail(false);
+      setFieldError(null);
     }
   }, [params.email, setEmail]);
 
-  // -----------------------
-  // Render
-  // -----------------------
+  const handleEditEmail = useCallback(() => {
+    setIsEditingEmail(true);
+    setVerificationMessage(null);
+  }, []);
+
+  const handleHeaderBack = useCallback(() => {
+    // @ts-ignore
+    if (navigation?.canGoBack?.()) {
+      // @ts-ignore
+      navigation.goBack();
+    } else {
+      router.replace('/(auth)/sign-in');
+    }
+  }, [navigation, router]);
+
+  // Render helpers
+  const renderHeader = () => (
+    <View className="mb-6 w-full items-center">
+      <View
+        className="mb-4 h-16 w-16 items-center justify-center rounded-2xl"
+        style={{ backgroundColor: colors.brand.navyBg }}
+      >
+        <Ionicons
+          name="mail-unread-outline"
+          size={28}
+          color={colors.brand.navy}
+        />
+      </View>
+
+      <Text className="mb-2 text-center text-[28px] font-extrabold text-slate-900">
+        Verifica tu correo
+      </Text>
+
+      {renderEmailSection()}
+    </View>
+  );
+
+  const renderEmailSection = () => {
+    if (isEditingEmail || !email) {
+      return (
+        <View className="w-full">
+          <Text className="mb-3 text-center text-[15px] leading-5 text-slate-600">
+            Ingresa tu email para enviar el enlace de verificación:
+          </Text>
+          <Input
+            placeholder="tu@email.com"
+            value={email}
+            onChangeText={handleEmailChange}
+            keyboardType="email-address"
+            autoCapitalize="none"
+            autoCorrect={false}
+            autoComplete="email"
+            error={fieldError || undefined}
+            editable={!sending}
+          />
+          {params.email && params.email !== email && (
+            <Pressable
+              className="mt-2 self-center"
+              onPress={handleUsePreviousEmail}
+              hitSlop={{ top: 8, bottom: 8, left: 16, right: 16 }}
+            >
+              <Text className="text-[14px] font-bold text-brand-navy">
+                Usar {params.email}
+              </Text>
+            </Pressable>
+          )}
+        </View>
+      );
+    }
+
+    return (
+      <View className="max-w-full">
+        <Text className="text-center text-[15px] leading-5 text-slate-600">
+          Enviamos un enlace de verificación a:
+        </Text>
+        <View className="mt-1 flex-row items-center justify-center gap-2">
+          <Text
+            className="text-center text-[15px] font-bold text-slate-900"
+            numberOfLines={1}
+            ellipsizeMode="middle"
+          >
+            {maskEmail}
+          </Text>
+          <Pressable
+            onPress={handleEditEmail}
+            hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+          >
+            <Text className="text-[14px] font-bold text-brand-navy">
+              Cambiar
+            </Text>
+          </Pressable>
+        </View>
+      </View>
+    );
+  };
+
+  const renderMessages = () => (
+    <>
+      {globalError && (
+        <View
+          accessibilityRole="alert"
+          className="mb-3 rounded-xl border px-3 py-2.5"
+          style={{
+            backgroundColor: colors.error.bg,
+            borderColor: '#FCA5A5',
+          }}
+        >
+          <Text
+            className="text-center text-[14px] font-medium"
+            style={{ color: colors.error.fg }}
+          >
+            {globalError}
+          </Text>
+        </View>
+      )}
+
+      {sent && !globalError && (
+        <View
+          className="mb-3 rounded-xl border px-3 py-2.5"
+          style={{
+            backgroundColor: '#DCFCE7',
+            borderColor: '#86EFAC',
+          }}
+        >
+          <Text
+            className="text-center text-[14px] font-medium"
+            style={{ color: '#166534' }}
+          >
+            ¡Enlace enviado! Revisa tu bandeja de entrada.
+          </Text>
+        </View>
+      )}
+
+      {verificationMessage && (
+        <View className="mb-3 rounded-xl bg-gray-50 px-3 py-2.5">
+          <Text className="text-center text-[14px] text-slate-600">
+            {verificationMessage}
+          </Text>
+        </View>
+      )}
+    </>
+  );
+
+  const canResend = email && validateEmail(email) && !sending && cooldown <= 0;
+
+  // Main render
   return (
     <KeyboardAvoidingView
-      style={styles.root}
+      className="flex-1 bg-surface"
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
       <Stack.Screen
@@ -148,7 +324,7 @@ export function VerifyEmailForm() {
           headerLeft: () => (
             <Pressable
               onPress={handleHeaderBack}
-              hitSlop={10}
+              hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               accessibilityRole="button"
               accessibilityLabel="Volver"
             >
@@ -162,166 +338,53 @@ export function VerifyEmailForm() {
         }}
       />
 
-      <View
-        style={[
-          styles.centered,
-          { paddingTop: Math.max(0, 8 - insets.top / 2) },
-        ]}
+      <ScrollView
+        className="flex-1"
+        contentContainerStyle={{
+          flexGrow: 1,
+          paddingBottom: Math.max(12, insets.bottom),
+        }}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
       >
-        {/* Header visual */}
-        <View style={styles.header}>
-          <View style={styles.logoCircle}>
-            <Ionicons
-              name="mail-unread-outline"
-              size={28}
-              color={colors.brand.navy}
+        <View className="flex-1 justify-center px-6 py-8">
+          {renderHeader()}
+          {renderMessages()}
+
+          {/* Botones de acción */}
+          <View className="mt-2">
+            <Button
+              title={
+                cooldown > 0 ? `Reenviar en ${cooldown}s` : 'Reenviar enlace'
+              }
+              onPress={handleResend}
+              disabled={!canResend}
+              loading={sending}
+              accessibilityHint="Reenviar el email de verificación"
+            />
+
+            <Button
+              title={
+                isCheckingVerification
+                  ? 'Verificando...'
+                  : 'Ya verifiqué mi correo'
+              }
+              variant="outline"
+              onPress={handleCheckVerification}
+              disabled={isCheckingVerification || sending}
+              loading={isCheckingVerification}
+              accessibilityHint="Comprobar si tu cuenta ya está verificada"
+              style={{ marginTop: 10 }}
             />
           </View>
-          <Text style={styles.title}>Verifica tu correo</Text>
 
-          {/* Email – visual o edición */}
-          {!editingEmail && !!email ? (
-            <View style={styles.emailRow}>
-              <Text style={styles.subtitle}>Enviamos un enlace a&nbsp;</Text>
-              <Text
-                style={[styles.subtitle, styles.emailStrong]}
-                numberOfLines={1}
-                ellipsizeMode="middle"
-              >
-                {maskEmail}
-              </Text>
-              <Text style={styles.subtitle}>.&nbsp;</Text>
-              <Pressable onPress={() => setEditingEmail(true)} hitSlop={8}>
-                <Text style={[styles.subtitle, styles.linkInline]}>
-                  Cambiar
-                </Text>
-              </Pressable>
-            </View>
-          ) : (
-            <View style={{ width: '100%' }}>
-              <Text
-                style={[
-                  styles.subtitle,
-                  { textAlign: 'left', marginBottom: 10 },
-                ]}
-              >
-                Escribe tu correo para reenviar el enlace:
-              </Text>
-              <Input
-                placeholder="tu@correo.com"
-                value={email}
-                onChangeText={(t) => setEmail(t)}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-                autoComplete="email"
-              />
-              {!!params.email && (
-                <Pressable
-                  style={{ alignSelf: 'flex-start', marginTop: 8 }}
-                  onPress={handleUsePreviousEmail}
-                  hitSlop={8}
-                >
-                  <Text style={styles.linkInline}>Usar el correo anterior</Text>
-                </Pressable>
-              )}
-            </View>
-          )}
-        </View>
-
-        {/* Mensajes */}
-        {!!error && <Text style={styles.errorText}>{error}</Text>}
-        {!!sent && <Text style={styles.okText}>¡Enlace reenviado!</Text>}
-        {!!localMsg && <Text style={styles.infoText}>{localMsg}</Text>}
-
-        {/* Acciones */}
-        <Button
-          title={cooldown > 0 ? `Reenviar (${cooldown}s)` : 'Reenviar enlace'}
-          onPress={handleResend}
-          disabled={!canResend}
-          style={styles.primaryCta}
-          accessibilityHint="Reenviar el email de verificación"
-        />
-
-        <Button
-          title={checking ? 'Comprobando…' : 'Ya verifiqué mi correo'}
-          variant="outline"
-          onPress={handleIAmVerified}
-          disabled={checking}
-          style={styles.secondaryCta}
-          accessibilityHint="Comprobar si tu cuenta ya quedó verificada"
-        />
-
-        {/* Tip sutil */}
-        <View style={styles.tips}>
-          <Text style={styles.tipText}>
-            Revisa spam/promociones. Si cambiaste tu correo, usa el campo de
-            arriba y vuelve a enviar.
+          {/* Tips */}
+          <Text className="mt-4 px-2 text-center text-[12px] text-slate-400">
+            Revisa tu carpeta de spam o promociones.{'\n'}
+            El enlace expira en 24 horas.
           </Text>
         </View>
-      </View>
+      </ScrollView>
     </KeyboardAvoidingView>
   );
 }
-
-const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.surface },
-  centered: {
-    flex: 1,
-    paddingHorizontal: spacing.gutter, // 24
-    paddingVertical: spacing.xxl * 2, // 64 (sin cambiar el espacio actual)
-    justifyContent: 'center',
-  },
-
-  header: { alignItems: 'center', marginBottom: 22, width: '100%' },
-  logoCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 20,
-    backgroundColor: colors.brand.navyBg,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: 14,
-  },
-
-  title: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: colors.textPrimary,
-    marginBottom: 10,
-    textAlign: 'center',
-  },
-
-  // —— Alineación perfecta entre correo y “Cambiar”
-  emailRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    alignItems: 'baseline',
-    justifyContent: 'center',
-    maxWidth: '100%',
-    rowGap: 4,
-  },
-
-  subtitle: {
-    fontSize: 15,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
-  emailStrong: { fontWeight: '700', color: colors.textPrimary },
-  linkInline: { color: colors.brand.navy, fontWeight: '700' },
-
-  errorText: { textAlign: 'center', color: colors.error.fg, marginBottom: 6 },
-  okText: { textAlign: 'center', color: colors.success.fg, marginBottom: 6 },
-  infoText: { textAlign: 'center', color: colors.textMuted, marginBottom: 6 },
-
-  primaryCta: {
-    marginTop: 10,
-    backgroundColor: colors.brand.navy,
-    borderColor: colors.brand.navy,
-  },
-  secondaryCta: { marginTop: 10 },
-
-  tips: { marginTop: 10, paddingHorizontal: 6 },
-  tipText: { textAlign: 'center', color: colors.textHint, fontSize: 12 },
-});

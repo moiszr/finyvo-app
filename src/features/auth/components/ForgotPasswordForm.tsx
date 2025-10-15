@@ -1,352 +1,362 @@
-// features/auth/components/ForgotPasswordForm.tsx
-import React, { useState, useRef, useEffect } from 'react';
+// src/features/auth/components/ForgotPasswordForm.tsx
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
-  StyleSheet,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
   Animated,
   Easing,
+  StyleSheet,
+  Keyboard,
 } from 'react-native';
 import { Link } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button, Input } from '@/components/ui';
 import { useForgotPassword } from '../hooks/useForgotPassword';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing } from '@/themes/index';
+import { colors } from '@/design';
 
-const CIRCLE = 64; // igual que tu logoCircle
+// Constantes
+const CIRCLE_SIZE = 64;
+const ANIMATION_CONFIG = {
+  checkPop: {
+    friction: 6,
+    tension: 120,
+  },
+  ripple: {
+    duration1: 1500,
+    duration2: 2000,
+    delay2: 120,
+  },
+} as const;
+
+const EMAIL_VALIDATION = {
+  pattern: /^[^\s@]+@[^\s@]+\.[^\s@]+$/,
+  errorEmpty: 'Ingresa tu email',
+  errorInvalid: 'Email inválido',
+} as const;
 
 export function ForgotPasswordForm() {
+  const insets = useSafeAreaInsets();
+
+  // State
   const [email, setEmail] = useState('');
-  const [emailError, setEmailError] = useState<string | null>(null);
+  const [fieldError, setFieldError] = useState<string | null>(null);
 
-  const { sendResetEmail, loading, error, emailSent, clearError } =
-    useForgotPassword();
+  // Hook
+  const {
+    sendResetEmail,
+    loading,
+    error: globalError,
+    emailSent,
+    clearError,
+    reset,
+  } = useForgotPassword();
 
-  // Animaciones para el estado de éxito
-  const checkPop = useRef(new Animated.Value(0)).current;
-  const ripple1 = useRef(new Animated.Value(0)).current;
-  const ripple2 = useRef(new Animated.Value(0)).current;
+  // Animaciones
+  const animations = useRef({
+    checkPop: new Animated.Value(0),
+    ripple1: new Animated.Value(0),
+    ripple2: new Animated.Value(0),
+  }).current;
 
+  // Efecto de animación cuando el email se envía exitosamente
   useEffect(() => {
     if (!emailSent) return;
 
-    // reset valores
-    checkPop.setValue(0);
-    ripple1.setValue(0);
-    ripple2.setValue(0);
+    // Reset valores de animación
+    Object.values(animations).forEach((anim) => anim.setValue(0));
 
-    // pop del check
-    const popAnim = Animated.spring(checkPop, {
+    // Animación del check
+    const popAnim = Animated.spring(animations.checkPop, {
       toValue: 1,
-      friction: 6,
-      tension: 120,
+      ...ANIMATION_CONFIG.checkPop,
       useNativeDriver: true,
     });
 
-    // ondas en loop (no bloquean interacción)
-    const loop1 = Animated.loop(
-      Animated.timing(ripple1, {
-        toValue: 1,
-        duration: 1500,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-        isInteraction: false,
-      }),
+    // Animaciones de ripple en loop
+    const createRippleLoop = (
+      anim: Animated.Value,
+      duration: number,
+      delay = 0,
+    ) =>
+      Animated.loop(
+        Animated.timing(anim, {
+          toValue: 1,
+          duration,
+          delay,
+          easing: Easing.out(Easing.quad),
+          useNativeDriver: true,
+          isInteraction: false,
+        }),
+      );
+
+    const loop1 = createRippleLoop(
+      animations.ripple1,
+      ANIMATION_CONFIG.ripple.duration1,
     );
-    const loop2 = Animated.loop(
-      Animated.timing(ripple2, {
-        toValue: 1,
-        duration: 2000,
-        delay: 120,
-        easing: Easing.out(Easing.quad),
-        useNativeDriver: true,
-        isInteraction: false,
-      }),
+    const loop2 = createRippleLoop(
+      animations.ripple2,
+      ANIMATION_CONFIG.ripple.duration2,
+      ANIMATION_CONFIG.ripple.delay2,
     );
 
+    // Iniciar animaciones
     popAnim.start();
     loop1.start();
     loop2.start();
 
+    // Cleanup
     return () => {
       loop1.stop();
       loop2.stop();
     };
-  }, [emailSent, checkPop, ripple1, ripple2]);
+  }, [emailSent, animations]);
 
-  const validateEmail = (value: string): boolean => {
-    const v = value.trim();
-    if (!v) {
-      setEmailError('Ingresa tu email');
+  // Helpers
+  const validateEmail = useCallback((value: string): boolean => {
+    const trimmed = value.trim();
+
+    if (!trimmed) {
+      setFieldError(EMAIL_VALIDATION.errorEmpty);
       return false;
     }
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) {
-      setEmailError('Email inválido');
+
+    if (!EMAIL_VALIDATION.pattern.test(trimmed)) {
+      setFieldError(EMAIL_VALIDATION.errorInvalid);
       return false;
     }
-    setEmailError(null);
+
+    setFieldError(null);
     return true;
-  };
+  }, []);
 
-  const handleSubmit = async () => {
-    clearError();
+  const handleEmailChange = useCallback(
+    (text: string) => {
+      setEmail(text);
+
+      // Limpiar errores cuando el usuario empieza a escribir
+      if (fieldError) setFieldError(null);
+      if (globalError) clearError();
+    },
+    [fieldError, globalError, clearError],
+  );
+
+  const handleSubmit = useCallback(async () => {
+    Keyboard.dismiss();
+
     if (!validateEmail(email)) return;
-    await sendResetEmail({ email });
-  };
 
-  const handleEmailChange = (text: string) => {
-    setEmail(text);
-    if (emailError) setEmailError(null);
-  };
+    await sendResetEmail({ email: email.trim() });
+  }, [email, validateEmail, sendResetEmail]);
 
-  // ——— Estado de éxito ———
-  if (emailSent) {
-    // Interpolaciones de las ondas
-    const rippleScale1 = ripple1.interpolate({
-      inputRange: [0, 1],
-      outputRange: [0.6, 2.0],
-    });
-    const rippleOpacity1 = ripple1.interpolate({
-      inputRange: [0, 1],
-      outputRange: [0.25, 0],
-    });
-    const rippleScale2 = ripple2.interpolate({
-      inputRange: [0, 1],
-      outputRange: [0.6, 2.4],
-    });
-    const rippleOpacity2 = ripple2.interpolate({
-      inputRange: [0, 1],
-      outputRange: [0.18, 0],
-    });
+  // Render helpers
+  const renderSuccessAnimation = () => {
+    const rippleInterpolations = [
+      {
+        scale: animations.ripple1.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.6, 2.0],
+        }),
+        opacity: animations.ripple1.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.25, 0],
+        }),
+      },
+      {
+        scale: animations.ripple2.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.6, 2.4],
+        }),
+        opacity: animations.ripple2.interpolate({
+          inputRange: [0, 1],
+          outputRange: [0.18, 0],
+        }),
+      },
+    ];
 
     return (
-      <KeyboardAvoidingView
-        style={styles.root}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      <View
+        className="mb-4 items-center justify-center"
+        style={{ width: CIRCLE_SIZE * 2.2, height: CIRCLE_SIZE * 2.2 }}
+        pointerEvents="none"
       >
-        <ScrollView
-          style={{ flex: 1 }}
-          contentContainerStyle={styles.centered}
-          keyboardShouldPersistTaps="handled"
-          showsVerticalScrollIndicator={false}
+        {rippleInterpolations.map((interpolation, index) => (
+          <Animated.View
+            key={`ripple-${index}`}
+            style={[
+              styles.ripple,
+              {
+                transform: [{ scale: interpolation.scale }],
+                opacity: interpolation.opacity,
+                backgroundColor: colors.brand.navy,
+              },
+            ]}
+          />
+        ))}
+        <Animated.View
+          style={[
+            styles.checkCircle,
+            {
+              transform: [{ scale: animations.checkPop }],
+              backgroundColor: colors.brand.navy,
+            },
+          ]}
         >
-          <View style={styles.header}>
-            {/* Zona animada consistente con EmailVerified */}
-            <View style={styles.animBox} pointerEvents="none">
-              <Animated.View
-                style={[
-                  styles.ripple,
-                  {
-                    transform: [{ scale: rippleScale1 }],
-                    opacity: rippleOpacity1,
-                  },
-                ]}
-              />
-              <Animated.View
-                style={[
-                  styles.ripple,
-                  {
-                    transform: [{ scale: rippleScale2 }],
-                    opacity: rippleOpacity2,
-                  },
-                ]}
-              />
-              <Animated.View
-                style={[
-                  styles.checkCircle,
-                  { transform: [{ scale: checkPop }] },
-                ]}
-              >
-                <Ionicons name="checkmark" size={34} color={colors.raw.white} />
-              </Animated.View>
-            </View>
-
-            <Text style={styles.title}>¡Enlace enviado!</Text>
-            <Text style={styles.subtitle}>
-              Te enviamos un correo para restablecer tu contraseña a:
-            </Text>
-            <Text style={styles.emailHighlight}>{email}</Text>
-            <Text style={styles.helper}>
-              Revisa bandeja de entrada y spam. El enlace expira en 1 hora.
-            </Text>
-          </View>
-
-          <Link href="/(auth)/sign-in" asChild>
-            <Button
-              title="Volver al inicio de sesión"
-              style={styles.primaryCta}
-              accessibilityHint="Ir a la pantalla de inicio de sesión"
-            />
-          </Link>
-        </ScrollView>
-      </KeyboardAvoidingView>
+          <Ionicons name="checkmark" size={34} color={colors.raw.white} />
+        </Animated.View>
+      </View>
     );
-  }
+  };
 
-  // ——— Formulario ———
-  return (
-    <KeyboardAvoidingView
-      style={styles.root}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    >
-      <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={styles.centered}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        {/* Header */}
-        <View style={styles.header}>
-          <View style={styles.logoCircle}>
-            <Ionicons
-              name="mail-open-outline"
-              size={28}
-              color={colors.brand.navy}
-            />
-          </View>
-          <Text style={styles.title}>Recuperar contraseña</Text>
-          <Text style={styles.subtitle}>
-            Ingresa tu email y te enviaremos un enlace para restablecerla.
-          </Text>
+  const renderSuccessContent = () => (
+    <View className="flex-1 items-center justify-center px-6 py-8">
+      {renderSuccessAnimation()}
+
+      <Text className="mb-1 text-center text-[28px] font-extrabold text-slate-900">
+        ¡Enlace enviado!
+      </Text>
+      <Text className="text-center text-[15px] text-slate-600">
+        Te enviamos un correo para restablecer tu contraseña a:
+      </Text>
+      <Text className="mt-1 text-center text-base font-bold text-slate-900">
+        {email}
+      </Text>
+      <Text className="mt-3 text-center text-[13px] leading-[18px] text-slate-500">
+        Revisa bandeja de entrada y spam. El enlace expira en 1 hora.
+      </Text>
+
+      <Link href="/(auth)/sign-in" asChild>
+        <Button
+          title="Volver al inicio de sesión"
+          style={{ alignSelf: 'stretch', marginTop: 12 }}
+          accessibilityHint="Ir a la pantalla de inicio de sesión"
+        />
+      </Link>
+    </View>
+  );
+
+  const renderFormContent = () => (
+    <View className="flex-1 justify-center px-6 py-8">
+      {/* Header */}
+      <View className="mb-5 items-center">
+        <View
+          className="mb-4 h-16 w-16 items-center justify-center rounded-2xl"
+          style={{ backgroundColor: colors.brand.navyBg }}
+        >
+          <Ionicons
+            name="mail-open-outline"
+            size={28}
+            color={colors.brand.navy}
+          />
         </View>
+        <Text className="mb-1 text-center text-[28px] font-extrabold text-slate-900">
+          Recuperar contraseña
+        </Text>
+        <Text className="text-center text-[15px] leading-[20px] text-slate-600">
+          Ingresa tu email y te enviaremos un enlace para restablecerla.
+        </Text>
+      </View>
 
-        {/* Campo */}
+      {/* Form */}
+      <View className="mb-3">
         <Input
           placeholder="Ingresa tu email"
           keyboardType="email-address"
           autoCapitalize="none"
           autoCorrect={false}
+          autoComplete="email"
           value={email}
           onChangeText={handleEmailChange}
-          error={emailError}
+          error={fieldError || undefined}
           returnKeyType="send"
           onSubmitEditing={handleSubmit}
-          containerStyle={{ marginBottom: spacing.s }}
+          editable={!loading}
         />
+      </View>
 
-        {/* Error global */}
-        {error ? <Text style={styles.errorBox}>{error}</Text> : null}
-
-        {/* CTA */}
-        <Button
-          title="Enviar enlace"
-          onPress={handleSubmit}
-          loading={loading}
-          style={styles.primaryCta}
-        />
-
-        {/* Footer link */}
-        <View style={styles.footer}>
-          <Text style={styles.footerText}>
-            ¿Recordaste tu contraseña?{' '}
-            <Link href="/(auth)/sign-in" style={styles.footerLink}>
-              Inicia sesión
-            </Link>
+      {/* Global Error */}
+      {globalError && (
+        <View
+          accessibilityRole="alert"
+          className="mb-3 rounded-xl border px-3 py-2.5"
+          style={{
+            backgroundColor: colors.error.bg,
+            borderColor: '#FCA5A5',
+          }}
+        >
+          <Text
+            className="text-center text-[14px] font-medium"
+            style={{ color: colors.error.fg }}
+          >
+            {globalError}
           </Text>
         </View>
+      )}
+
+      {/* CTA */}
+      <Button
+        title="Enviar enlace"
+        onPress={handleSubmit}
+        loading={loading}
+        disabled={loading}
+        style={{ alignSelf: 'stretch', marginTop: 4, marginBottom: 12 }}
+      />
+
+      {/* Footer link */}
+      <View className="mt-2 items-center">
+        <Text className="text-[15px] text-slate-600">
+          ¿Recordaste tu contraseña?{' '}
+          <Link
+            href="/(auth)/sign-in"
+            className={`font-bold ${loading ? 'opacity-50' : 'text-brand-navy'}`}
+            aria-disabled={loading}
+          >
+            Inicia sesión
+          </Link>
+        </Text>
+      </View>
+    </View>
+  );
+
+  // Main render
+  return (
+    <KeyboardAvoidingView className="flex-1 bg-surface" behavior={undefined}>
+      <ScrollView
+        className="flex-1"
+        contentContainerStyle={{
+          flexGrow: 1,
+          paddingBottom: Math.max(12, insets.bottom),
+        }}
+        keyboardShouldPersistTaps="handled"
+        showsVerticalScrollIndicator={false}
+      >
+        {emailSent ? renderSuccessContent() : renderFormContent()}
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
-  root: { flex: 1, backgroundColor: colors.surface },
-
-  // Centrado vertical y padding consistente
-  centered: {
-    flexGrow: 1,
-    paddingHorizontal: spacing.gutter,
-    paddingVertical: spacing.xl,
-    justifyContent: 'center',
-  },
-
-  header: { alignItems: 'center', marginBottom: spacing.l },
-  logoCircle: {
-    width: 64,
-    height: 64,
-    borderRadius: 20,
-    backgroundColor: colors.surfaceAlt, // fondo suave para icono
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.m,
-  },
-
-  title: {
-    fontSize: 28,
-    fontWeight: '800',
-    color: colors.textPrimary,
-    marginBottom: spacing.xs,
-    textAlign: 'center',
-  },
-  subtitle: {
-    fontSize: 15,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: spacing.xs,
-  },
-
-  emailHighlight: {
-    fontSize: 16,
-    fontWeight: '700',
-    color: colors.textPrimary,
-    textAlign: 'center',
-    marginTop: spacing.xs,
-  },
-  helper: {
-    fontSize: 13,
-    color: colors.muted,
-    textAlign: 'center',
-    lineHeight: 18,
-    marginTop: spacing.s,
-  },
-
-  errorBox: {
-    textAlign: 'center',
-    color: colors.error.text,
-    marginBottom: spacing.s,
-  },
-
-  primaryCta: {
-    marginTop: spacing.s,
-    marginBottom: spacing.m,
-    backgroundColor: colors.brand.navy,
-    borderColor: colors.brand.navy,
-  },
-
-  // Ondas y círculo NAVY (match con EmailVerified)
-  animBox: {
-    width: CIRCLE * 2.2,
-    height: CIRCLE * 2.2,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginBottom: spacing.m,
-  },
   ripple: {
     position: 'absolute',
-    width: CIRCLE,
-    height: CIRCLE,
-    borderRadius: CIRCLE / 2,
-    backgroundColor: colors.brand.navy,
+    width: CIRCLE_SIZE,
+    height: CIRCLE_SIZE,
+    borderRadius: CIRCLE_SIZE / 2,
   },
   checkCircle: {
-    width: CIRCLE,
-    height: CIRCLE,
-    borderRadius: CIRCLE / 2,
-    backgroundColor: colors.brand.navy,
+    width: CIRCLE_SIZE,
+    height: CIRCLE_SIZE,
+    borderRadius: CIRCLE_SIZE / 2,
     alignItems: 'center',
     justifyContent: 'center',
-    elevation: 2,
+    // Sombra sutil
     shadowColor: '#000',
-    shadowOpacity: 0.12,
+    shadowOpacity: Platform.select({ ios: 0.12, android: 0.18 }),
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 6 },
+    elevation: 3,
   },
-
-  footer: { alignItems: 'center', marginTop: spacing.xs },
-  footerText: { color: colors.textSecondary, fontSize: 15 },
-  footerLink: { color: colors.brand.navy, fontWeight: '700' },
 });

@@ -1,4 +1,4 @@
-import { useAuthStore } from '@/store/authStore';
+import { useAuthStore } from '@/store/index';
 
 /**
  * Hook para manejo específico de estados de loading de auth
